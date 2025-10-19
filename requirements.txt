@@ -1,0 +1,56 @@
+# Core dependencies
+streamlit==1.38.0
+streamlit-option-menu==0.3.12
+
+# Database
+sqlalchemy==2.0.31
+psycopg2-binary==2.9.9
+alembic==1.13.2
+
+# AI/ML and OCR
+google-generativeai==0.7.2
+pillow==10.4.0
+pytesseract==0.3.10
+opencv-python==4.10.0.84
+
+# Data processing
+pandas==2.2.2
+numpy==1.26.4
+openpyxl==3.1.5
+xlsxwriter==3.2.0
+
+# Async processing
+celery==5.4.0
+redis==5.0.8
+
+# File handling
+python-multipart==0.0.9
+python-magic==0.4.27
+
+# Authentication and security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-dotenv==1.0.1
+
+# Date and time
+python-dateutil==2.9.0
+
+# Validation
+pydantic==2.8.2
+email-validator==2.2.0
+
+# Charts and visualization
+plotly==5.23.0
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# PDF processing
+PyPDF2==3.0.1
+reportlab==4.2.2
+
+# Image processing
+scikit-image==0.24.0
+
+# Testing
+pytest==8.3.2
+pytest-asyncio==0.24.0

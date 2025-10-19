@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s \"c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\")",
+      "Bash(dir /s /b \"c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\")",
+      "Bash(git init)",
+      "Bash(git add .)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

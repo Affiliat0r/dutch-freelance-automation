@@ -30,11 +30,21 @@ class OCRService:
             Dictionary containing OCR results
         """
         try:
-            # Preprocess image
-            processed_image = cls.preprocess_image(file_path)
+            # Handle PDFs differently - extract text directly
+            if file_path.lower().endswith('.pdf'):
+                ocr_text = cls.extract_text_from_pdf(file_path)
+                if not ocr_text or len(ocr_text.strip()) < 10:
+                    return {
+                        'success': False,
+                        'error': 'PDF text extraction failed or no text found',
+                        'file_path': file_path
+                    }
+            else:
+                # Preprocess image
+                processed_image = cls.preprocess_image(file_path)
 
-            # Perform OCR
-            ocr_text = cls.extract_text(processed_image)
+                # Perform OCR
+                ocr_text = cls.extract_text(processed_image)
 
             # Detect language
             language = cls.detect_language(ocr_text)
@@ -63,6 +73,29 @@ class OCRService:
             }
 
     @classmethod
+    def extract_text_from_pdf(cls, file_path: str) -> str:
+        """
+        Extract text directly from PDF using PyPDF2.
+
+        Args:
+            file_path: Path to PDF file
+
+        Returns:
+            Extracted text
+        """
+        try:
+            import PyPDF2
+            text = ""
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                for page in pdf_reader.pages:
+                    text += page.extract_text() + "\n"
+            return text
+        except Exception as e:
+            logger.error(f"PDF text extraction failed: {e}")
+            return ""
+
+    @classmethod
     def preprocess_image(cls, file_path: str) -> np.ndarray:
         """
         Preprocess image for better OCR results.
@@ -73,12 +106,10 @@ class OCRService:
         Returns:
             Preprocessed image as numpy array
         """
-        # Read image
+        # Read image (skip for PDFs - we'll extract text directly)
         if file_path.lower().endswith('.pdf'):
-            # Convert PDF to image first (simplified for now)
-            from pdf2image import convert_from_path
-            images = convert_from_path(file_path)
-            image = np.array(images[0])
+            # For PDFs, return empty array - we'll use direct text extraction
+            return np.array([])
         else:
             image = cv2.imread(file_path)
 

@@ -13,7 +13,7 @@ import sys
 sys.path.append(str(Path(__file__).parent))
 
 from config import Config
-from modules import (
+from pages import (
     dashboard,
     upload_receipts,
     receipt_management,
@@ -49,15 +49,6 @@ st.set_page_config(
         """
     }
 )
-
-# Hide default Streamlit navigation
-st.markdown("""
-    <style>
-        [data-testid="stSidebarNav"] {
-            display: none;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
 # Custom CSS for better UI
 def load_css():
@@ -190,24 +181,16 @@ def main():
         st.markdown("---")
 
         # Navigation menu
-        menu_options = [
-            "Dashboard",
-            "Upload Bonnen",
-            "Bonnen Beheer",
-            "Analytics",
-            "Export/Rapporten",
-            "Instellingen"
-        ]
-
-        # Check if navigation was triggered from a button
-        if 'selected_page' in st.session_state:
-            default_index = menu_options.index(st.session_state['selected_page']) if st.session_state['selected_page'] in menu_options else 0
-        else:
-            default_index = 0
-
         selected = option_menu(
             menu_title="Navigatie",
-            options=menu_options,
+            options=[
+                "Dashboard",
+                "Upload Bonnen",
+                "Bonnen Beheer",
+                "Analytics",
+                "Export/Rapporten",
+                "Instellingen"
+            ],
             icons=[
                 "speedometer2",
                 "cloud-upload",
@@ -217,7 +200,7 @@ def main():
                 "gear"
             ],
             menu_icon="list",
-            default_index=default_index,
+            default_index=0,
             styles={
                 "container": {"padding": "5!important", "background-color": "#fafafa"},
                 "icon": {"color": "#1f4788", "font-size": "20px"},
@@ -230,9 +213,6 @@ def main():
                 "nav-link-selected": {"background-color": "#e3f2fd"},
             }
         )
-
-        # Update session state with current selection
-        st.session_state['selected_page'] = selected
 
         # Footer info
         st.markdown("---")

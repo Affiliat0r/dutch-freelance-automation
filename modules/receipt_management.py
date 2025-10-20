@@ -3,9 +3,16 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+from pathlib import Path
 import logging
 
 from config import Config
+from utils.local_storage import (
+    filter_receipts,
+    get_receipt,
+    update_receipt_data,
+    load_metadata
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +50,14 @@ def show():
         with col4:
             status_filter = st.selectbox(
                 "Status",
-                ["Alle", "Verwerkt", "In behandeling", "Review nodig", "Mislukt"]
+                ["Alle", "completed", "pending", "processing", "failed"],
+                format_func=lambda x: {
+                    "Alle": "Alle",
+                    "completed": "Verwerkt",
+                    "pending": "In behandeling",
+                    "processing": "Bezig...",
+                    "failed": "Mislukt"
+                }.get(x, x)
             )
 
         col1, col2, col3, col4 = st.columns(4)
@@ -63,87 +77,146 @@ def show():
 
     st.markdown("---")
 
-    # Sample receipt data
-    receipt_data = create_sample_receipt_data()
+    # Get receipt data from local storage
+    try:
+        # Convert dates
+        start_datetime = datetime.combine(start_date, datetime.min.time()) if start_date else None
+        end_datetime = datetime.combine(end_date, datetime.max.time()) if end_date else None
 
-    # Statistics
-    col1, col2, col3, col4 = st.columns(4)
+        # Apply filters
+        receipts = filter_receipts(
+            start_date=start_datetime,
+            end_date=end_datetime,
+            status=status_filter if status_filter != "Alle" else None,
+            categories=selected_categories if selected_categories else None,
+            vendor=vendor_search if vendor_search else None,
+            min_amount=min_amount if min_amount > 0 else None,
+            max_amount=max_amount if max_amount < 10000 else None
+        )
 
-    with col1:
-        st.metric("Totaal bonnen", len(receipt_data))
+        # Convert to DataFrame format
+        receipt_data = []
+        for receipt in receipts:
+            extracted = receipt.get('extracted_data', {})
 
-    with col2:
-        total_amount = receipt_data['Totaal incl. BTW'].sum()
-        st.metric("Totaal bedrag", f"€ {total_amount:,.2f}")
+            # Parse upload date
+            upload_date = receipt.get('upload_date')
+            if isinstance(upload_date, str):
+                try:
+                    upload_date = datetime.fromisoformat(upload_date)
+                except:
+                    upload_date = datetime.now()
 
-    with col3:
-        vat_amount = receipt_data['BTW bedrag'].sum()
-        st.metric("Totaal BTW", f"€ {vat_amount:,.2f}")
+            # Get transaction date
+            trans_date = extracted.get('transaction_date') or extracted.get('date')
+            if isinstance(trans_date, str):
+                try:
+                    trans_date = datetime.fromisoformat(trans_date)
+                except:
+                    trans_date = upload_date
+            elif trans_date is None:
+                trans_date = upload_date
 
-    with col4:
-        avg_amount = receipt_data['Totaal incl. BTW'].mean()
-        st.metric("Gem. bedrag", f"€ {avg_amount:,.2f}")
+            # Calculate VAT amounts
+            vat_breakdown = extracted.get('vat_breakdown', {})
+            vat_6 = vat_breakdown.get('6', extracted.get('vat_6_amount', 0))
+            vat_9 = vat_breakdown.get('9', extracted.get('vat_9_amount', 0))
+            vat_21 = vat_breakdown.get('21', extracted.get('vat_21_amount', 0))
+            total_vat = vat_6 + vat_9 + vat_21
 
-    st.markdown("---")
+            if extracted:
+                receipt_data.append({
+                    'ID': receipt['id'],
+                    'Datum': trans_date,
+                    'Leverancier': extracted.get('vendor_name', 'Onbekend'),
+                    'Categorie': extracted.get('expense_category') or extracted.get('category', 'Niet gecategoriseerd'),
+                    'Bedrag excl. BTW': float(extracted.get('amount_excl_vat') or extracted.get('total_excl_vat', 0)),
+                    'BTW bedrag': float(total_vat),
+                    'Totaal incl. BTW': float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0)),
+                    'Status': receipt['processing_status'],
+                    'Bestand': receipt['filename']
+                })
+            else:
+                receipt_data.append({
+                    'ID': receipt['id'],
+                    'Datum': upload_date,
+                    'Leverancier': 'Nog niet verwerkt',
+                    'Categorie': 'Niet gecategoriseerd',
+                    'Bedrag excl. BTW': 0.0,
+                    'BTW bedrag': 0.0,
+                    'Totaal incl. BTW': 0.0,
+                    'Status': receipt['processing_status'],
+                    'Bestand': receipt['filename']
+                })
 
-    # Main receipt table
-    st.subheader("📋 Bonnen Overzicht")
+        if not receipt_data:
+            st.info("ℹ️ Geen bonnen gevonden met de huidige filters. Upload bonnen om te beginnen!")
+            if st.button("📤 Ga naar Upload Bonnen", use_container_width=True, type="primary"):
+                st.session_state['selected_page'] = "Upload Bonnen"
+                st.rerun()
+            return
 
-    # Add action buttons above table
-    col1, col2, col3, col4, col5 = st.columns(5)
+        df = pd.DataFrame(receipt_data)
 
-    with col1:
-        if st.button("✏️ Bewerken", use_container_width=True):
-            st.info("Selecteer bonnen om te bewerken")
+        # Statistics
+        col1, col2, col3, col4 = st.columns(4)
 
-    with col2:
-        if st.button("🗑️ Verwijderen", use_container_width=True):
-            st.warning("Selecteer bonnen om te verwijderen")
+        with col1:
+            st.metric("Totaal bonnen", len(df))
 
-    with col3:
-        if st.button("✅ Goedkeuren", use_container_width=True):
-            st.success("Bonnen goedgekeurd")
+        with col2:
+            total_amount = df['Totaal incl. BTW'].sum()
+            st.metric("Totaal bedrag", f"€ {total_amount:,.2f}")
 
-    with col4:
-        if st.button("📥 Downloaden", use_container_width=True):
-            st.info("Download wordt voorbereid...")
+        with col3:
+            vat_amount = df['BTW bedrag'].sum()
+            st.metric("Totaal BTW", f"€ {vat_amount:,.2f}")
 
-    with col5:
-        if st.button("💾 Exporteren", use_container_width=True):
-            st.info("Export wordt voorbereid...")
+        with col4:
+            avg_amount = df['Totaal incl. BTW'].mean()
+            st.metric("Gem. bedrag", f"€ {avg_amount:,.2f}")
 
-    # Display receipt table with selection
-    selected_receipts = display_receipt_table(receipt_data)
+        st.markdown("---")
 
-    if selected_receipts:
-        st.info(f"{len(selected_receipts)} bon(nen) geselecteerd")
+        # Main receipt table
+        st.subheader("📋 Bonnen Overzicht")
 
-    st.markdown("---")
+        # Add action buttons above table
+        col1, col2, col3, col4, col5 = st.columns(5)
 
-    # Receipt detail view
-    if st.checkbox("🔍 Gedetailleerde weergave"):
-        show_receipt_details(receipt_data)
+        with col1:
+            if st.button("✏️ Bewerken", use_container_width=True):
+                st.info("Selecteer een bon in de gedetailleerde weergave hieronder om te bewerken")
 
-def create_sample_receipt_data():
-    """Create sample receipt data for demonstration."""
+        with col2:
+            if st.button("🗑️ Verwijderen", use_container_width=True):
+                st.warning("Selecteer bonnen om te verwijderen (functie komt binnenkort)")
 
-    data = {
-        'ID': [f'R2024{i:04d}' for i in range(1, 21)],
-        'Datum': pd.date_range(start='2024-11-01', periods=20, freq='D'),
-        'Leverancier': ['Albert Heijn', 'Bol.com', 'Coolblue', 'HEMA', 'MediaMarkt'] * 4,
-        'Categorie': ['Kantoorkosten', 'Beroepskosten', 'Representatiekosten - Type 1',
-                     'Vervoerskosten', 'Zakelijke opleidingskosten'] * 4,
-        'Bedrag excl. BTW': [41.32, 103.31, 206.61, 28.93, 413.22] * 4,
-        'BTW bedrag': [8.68, 21.69, 43.39, 6.07, 86.78] * 4,
-        'Totaal incl. BTW': [50.00, 125.00, 250.00, 35.00, 500.00] * 4,
-        'BTW %': [21, 21, 21, 21, 21] * 4,
-        'Status': ['Verwerkt', 'Verwerkt', 'In behandeling', 'Review nodig', 'Verwerkt'] * 4,
-        'Bestand': ['receipt_001.pdf', 'receipt_002.jpg', 'receipt_003.pdf',
-                   'receipt_004.png', 'receipt_005.pdf'] * 4
-    }
+        with col3:
+            if st.button("✅ Goedkeuren", use_container_width=True):
+                st.success("Bulk goedkeuring komt binnenkort")
 
-    df = pd.DataFrame(data)
-    return df
+        with col4:
+            if st.button("📥 Downloaden", use_container_width=True):
+                st.info("Bulk download komt binnenkort")
+
+        with col5:
+            if st.button("💾 Exporteren", use_container_width=True):
+                st.session_state['selected_page'] = "Export/Rapporten"
+                st.rerun()
+
+        # Display receipt table with selection
+        display_receipt_table(df)
+
+        st.markdown("---")
+
+        # Receipt detail view
+        if st.checkbox("🔍 Gedetailleerde weergave"):
+            show_receipt_details(df)
+
+    except Exception as e:
+        logger.error(f"Error loading receipts: {e}")
+        st.error(f"Fout bij laden van bonnen: {str(e)}")
 
 def display_receipt_table(df):
     """Display receipt table with selection capability."""
@@ -153,10 +226,18 @@ def display_receipt_table(df):
     df_display.insert(0, 'Selecteer', False)
 
     # Format columns for display
-    df_display['Datum'] = df_display['Datum'].dt.strftime('%d-%m-%Y')
+    df_display['Datum'] = pd.to_datetime(df_display['Datum']).dt.strftime('%d-%m-%Y')
     df_display['Bedrag excl. BTW'] = df_display['Bedrag excl. BTW'].apply(lambda x: f"€ {x:,.2f}")
     df_display['BTW bedrag'] = df_display['BTW bedrag'].apply(lambda x: f"€ {x:,.2f}")
     df_display['Totaal incl. BTW'] = df_display['Totaal incl. BTW'].apply(lambda x: f"€ {x:,.2f}")
+
+    # Format status
+    df_display['Status'] = df_display['Status'].apply(lambda x: {
+        'completed': '✅ Verwerkt',
+        'pending': '⏳ In behandeling',
+        'processing': '🔄 Bezig...',
+        'failed': '❌ Mislukt'
+    }.get(x, x))
 
     # Use st.data_editor for interactive table
     edited_df = st.data_editor(
@@ -169,7 +250,7 @@ def display_receipt_table(df):
                 help="Selecteer bonnen voor bulk acties",
                 default=False,
             ),
-            "ID": st.column_config.TextColumn(
+            "ID": st.column_config.NumberColumn(
                 "Bon ID",
                 help="Unieke identificatie van de bon",
                 width="small",
@@ -182,29 +263,28 @@ def display_receipt_table(df):
                 "Leverancier",
                 width="medium",
             ),
-            "Categorie": st.column_config.SelectboxColumn(
+            "Categorie": st.column_config.TextColumn(
                 "Categorie",
                 help="Expense categorie",
                 width="medium",
-                options=Config.EXPENSE_CATEGORIES,
             ),
-            "Status": st.column_config.SelectboxColumn(
+            "Status": st.column_config.TextColumn(
                 "Status",
                 help="Verwerkingsstatus",
                 width="small",
-                options=["Verwerkt", "In behandeling", "Review nodig", "Mislukt"],
             ),
             "Bestand": st.column_config.TextColumn(
                 "Bestand",
                 width="small",
             ),
         },
-        disabled=["ID", "Bestand"],
+        disabled=["ID", "Datum", "Leverancier", "Categorie", "Bedrag excl. BTW", "BTW bedrag", "Totaal incl. BTW", "Status", "Bestand"],
     )
 
     # Get selected rows
     selected_rows = edited_df[edited_df['Selecteer'] == True]
-    return selected_rows
+    if len(selected_rows) > 0:
+        st.info(f"✓ {len(selected_rows)} bon(nen) geselecteerd")
 
 def show_receipt_details(df):
     """Show detailed view of selected receipt."""
@@ -214,121 +294,248 @@ def show_receipt_details(df):
     # Select receipt to view
     receipt_id = st.selectbox(
         "Selecteer bon voor details:",
-        df['ID'].tolist()
+        df['ID'].tolist(),
+        format_func=lambda x: f"Bon #{x} - {df[df['ID'] == x]['Leverancier'].values[0]}"
     )
 
     if receipt_id:
-        receipt = df[df['ID'] == receipt_id].iloc[0]
+        receipt_row = df[df['ID'] == receipt_id].iloc[0]
 
-        col1, col2 = st.columns(2)
+        # Get full receipt data from local storage
+        try:
+            receipt = get_receipt(receipt_id)
 
-        with col1:
-            st.markdown("### 🖼️ Bon Afbeelding")
+            if not receipt:
+                st.error("Bon niet gevonden in local storage")
+                return
 
-            # Placeholder for receipt image
-            st.info("Bon afbeelding wordt hier getoond")
+            extracted = receipt.get('extracted_data', {})
 
-            # Image controls
-            col1a, col1b, col1c = st.columns(3)
-            with col1a:
-                st.button("🔍 Zoom", use_container_width=True)
-            with col1b:
-                st.button("🔄 Roteren", use_container_width=True)
-            with col1c:
-                st.button("📥 Download", use_container_width=True)
+            col1, col2 = st.columns(2)
 
-        with col2:
-            st.markdown("### 📊 Geëxtraheerde Gegevens")
+            with col1:
+                st.markdown("### 🖼️ Bon Afbeelding")
 
-            # Editable fields
-            edited_date = st.date_input(
-                "Datum",
-                value=receipt['Datum'],
-                format="DD/MM/YYYY"
-            )
+                # Show receipt image if available
+                file_path = receipt.get('file_path')
+                filename = receipt.get('filename')
 
-            edited_vendor = st.text_input(
-                "Leverancier",
-                value=receipt['Leverancier']
-            )
+                if file_path and Path(file_path).exists():
+                    try:
+                        st.image(file_path, use_container_width=True)
+                    except Exception as e:
+                        st.info(f"Kan afbeelding niet laden: {filename}")
+                        st.text(f"Bestandspad: {file_path}")
+                else:
+                    st.info(f"Bon afbeelding niet beschikbaar\n\nBestand: {filename}")
 
-            edited_category = st.selectbox(
-                "Categorie",
-                Config.EXPENSE_CATEGORIES,
-                index=Config.EXPENSE_CATEGORIES.index(receipt['Categorie'])
-            )
+                # Image controls
+                col1a, col1b, col1c = st.columns(3)
+                with col1a:
+                    if st.button("🔍 Zoom", use_container_width=True, disabled=True):
+                        st.info("Zoom functie komt binnenkort")
+                with col1b:
+                    if st.button("🔄 Roteren", use_container_width=True, disabled=True):
+                        st.info("Rotatie functie komt binnenkort")
+                with col1c:
+                    if file_path and Path(file_path).exists():
+                        with open(file_path, 'rb') as f:
+                            st.download_button(
+                                "📥 Download",
+                                data=f.read(),
+                                file_name=filename,
+                                use_container_width=True
+                            )
 
-            col2a, col2b = st.columns(2)
-            with col2a:
-                edited_amount_excl = st.number_input(
-                    "Bedrag excl. BTW (€)",
-                    value=float(receipt['Bedrag excl. BTW']),
-                    step=0.01
+            with col2:
+                st.markdown("### 📊 Geëxtraheerde Gegevens")
+
+                if not extracted:
+                    st.warning("⚠️ Deze bon is nog niet verwerkt of verwerking is mislukt")
+                    if st.button("🔄 Opnieuw verwerken", type="primary"):
+                        st.info("Herverwerking functie komt binnenkort")
+                    return
+
+                # Parse transaction date
+                trans_date = extracted.get('transaction_date') or extracted.get('date')
+                if isinstance(trans_date, str):
+                    try:
+                        trans_date = datetime.fromisoformat(trans_date).date()
+                    except:
+                        trans_date = datetime.now().date()
+                elif trans_date is None:
+                    trans_date = datetime.now().date()
+                elif isinstance(trans_date, datetime):
+                    trans_date = trans_date.date()
+
+                # Editable fields
+                edited_date = st.date_input(
+                    "Datum",
+                    value=trans_date,
+                    format="DD/MM/YYYY"
                 )
 
-            with col2b:
-                edited_vat_rate = st.selectbox(
-                    "BTW tarief (%)",
-                    [6, 9, 21],
-                    index=2
+                edited_vendor = st.text_input(
+                    "Leverancier",
+                    value=extracted.get('vendor_name', '')
                 )
 
-            vat_amount = edited_amount_excl * (edited_vat_rate / 100)
-            total_amount = edited_amount_excl + vat_amount
+                current_category = extracted.get('expense_category') or extracted.get('category', '')
+                category_index = Config.EXPENSE_CATEGORIES.index(current_category) if current_category in Config.EXPENSE_CATEGORIES else 0
 
-            col2c, col2d = st.columns(2)
-            with col2c:
-                st.number_input(
-                    "BTW bedrag (€)",
-                    value=vat_amount,
-                    disabled=True
+                edited_category = st.selectbox(
+                    "Categorie",
+                    Config.EXPENSE_CATEGORIES,
+                    index=category_index
                 )
 
-            with col2d:
-                st.number_input(
-                    "Totaal incl. BTW (€)",
-                    value=total_amount,
-                    disabled=True
+                col2a, col2b = st.columns(2)
+                with col2a:
+                    edited_amount_excl = st.number_input(
+                        "Bedrag excl. BTW (€)",
+                        value=float(extracted.get('amount_excl_vat') or extracted.get('total_excl_vat', 0)),
+                        step=0.01
+                    )
+
+                with col2b:
+                    # Determine current VAT rate
+                    vat_breakdown = extracted.get('vat_breakdown', {})
+                    vat_6 = float(vat_breakdown.get('6', extracted.get('vat_6_amount', 0)))
+                    vat_9 = float(vat_breakdown.get('9', extracted.get('vat_9_amount', 0)))
+                    vat_21 = float(vat_breakdown.get('21', extracted.get('vat_21_amount', 0)))
+
+                    current_vat_rate = 21
+                    if vat_9 > 0:
+                        current_vat_rate = 9
+                    elif vat_6 > 0:
+                        current_vat_rate = 6
+
+                    edited_vat_rate = st.selectbox(
+                        "BTW tarief (%)",
+                        [0, 6, 9, 21],
+                        index=[0, 6, 9, 21].index(current_vat_rate)
+                    )
+
+                vat_amount = edited_amount_excl * (edited_vat_rate / 100)
+                total_amount = edited_amount_excl + vat_amount
+
+                col2c, col2d = st.columns(2)
+                with col2c:
+                    st.number_input(
+                        "BTW bedrag (€)",
+                        value=vat_amount,
+                        disabled=True
+                    )
+
+                with col2d:
+                    st.number_input(
+                        "Totaal incl. BTW (€)",
+                        value=total_amount,
+                        disabled=True
+                    )
+
+                # Tax deduction settings
+                st.markdown("#### Belasting Aftrek")
+
+                col2e, col2f = st.columns(2)
+                with col2e:
+                    vat_deductible = st.slider(
+                        "BTW aftrekbaar (%)",
+                        min_value=0,
+                        max_value=100,
+                        value=int(extracted.get('vat_deductible_percentage', 100)),
+                        step=5
+                    )
+
+                with col2f:
+                    ib_deductible = st.slider(
+                        "IB aftrekbaar (%)",
+                        min_value=0,
+                        max_value=100,
+                        value=int(extracted.get('ib_deductible_percentage', 100)),
+                        step=5
+                    )
+
+                # Notes
+                notes = st.text_area(
+                    "Notities / Toelichting",
+                    value=extracted.get('notes') or extracted.get('explanation', ''),
+                    height=100
                 )
 
-            # Tax deduction settings
-            st.markdown("#### Belasting Aftrek")
+                # Save button
+                if st.button("💾 Wijzigingen Opslaan", use_container_width=True, type="primary"):
+                    try:
+                        # Update extracted data dictionary
+                        updated_data = extracted.copy()
+                        updated_data['transaction_date'] = edited_date.isoformat()
+                        updated_data['date'] = edited_date.isoformat()
+                        updated_data['vendor_name'] = edited_vendor
+                        updated_data['expense_category'] = edited_category
+                        updated_data['category'] = edited_category
+                        updated_data['total_excl_vat'] = edited_amount_excl
+                        updated_data['amount_excl_vat'] = edited_amount_excl
+                        updated_data['total_incl_vat'] = total_amount
+                        updated_data['total_amount'] = total_amount
 
-            col2e, col2f = st.columns(2)
-            with col2e:
-                vat_deductible = st.slider(
-                    "BTW aftrekbaar (%)",
-                    min_value=0,
-                    max_value=100,
-                    value=100,
-                    step=5
-                )
+                        # Update VAT amounts based on selected rate
+                        updated_data['vat_breakdown'] = {
+                            '6': vat_amount if edited_vat_rate == 6 else 0,
+                            '9': vat_amount if edited_vat_rate == 9 else 0,
+                            '21': vat_amount if edited_vat_rate == 21 else 0
+                        }
+                        updated_data['vat_6_amount'] = vat_amount if edited_vat_rate == 6 else 0
+                        updated_data['vat_9_amount'] = vat_amount if edited_vat_rate == 9 else 0
+                        updated_data['vat_21_amount'] = vat_amount if edited_vat_rate == 21 else 0
 
-            with col2f:
-                ib_deductible = st.slider(
-                    "IB aftrekbaar (%)",
-                    min_value=0,
-                    max_value=100,
-                    value=100,
-                    step=5
-                )
+                        updated_data['vat_deductible_percentage'] = vat_deductible
+                        updated_data['ib_deductible_percentage'] = ib_deductible
+                        updated_data['notes'] = notes
+                        updated_data['explanation'] = notes
 
-            # Notes
-            notes = st.text_area(
-                "Notities / Toelichting",
-                value="",
-                height=100
-            )
+                        # Calculate deductions
+                        updated_data['vat_refund_amount'] = vat_amount * (vat_deductible / 100)
+                        updated_data['vat_deductible_amount'] = vat_amount * (vat_deductible / 100)
+                        updated_data['ib_deduction_amount'] = edited_amount_excl * (ib_deductible / 100)
+                        updated_data['profit_deduction'] = edited_amount_excl * (ib_deductible / 100)
 
-            # Save button
-            if st.button("💾 Wijzigingen Opslaan", use_container_width=True, type="primary"):
-                st.success("✅ Wijzigingen opgeslagen!")
+                        # Save to local storage
+                        update_receipt_data(receipt_id, updated_data)
 
-            # Additional info
-            st.markdown("---")
-            st.markdown("#### 📝 Metadata")
+                        st.success("✅ Wijzigingen succesvol opgeslagen!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Fout bij opslaan: {str(e)}")
+                        logger.error(f"Error saving receipt changes: {e}")
 
-            st.text(f"Upload datum: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
-            st.text(f"Laatst gewijzigd: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
-            st.text(f"Bestandsnaam: {receipt['Bestand']}")
-            st.text(f"Status: {receipt['Status']}")
+                # Additional info
+                st.markdown("---")
+                st.markdown("#### 📝 Metadata")
+
+                # Parse dates
+                upload_date = receipt.get('upload_date', '')
+                if isinstance(upload_date, str):
+                    try:
+                        upload_date = datetime.fromisoformat(upload_date).strftime('%d-%m-%Y %H:%M')
+                    except:
+                        upload_date = 'Onbekend'
+
+                updated_at = receipt.get('updated_at', '')
+                if isinstance(updated_at, str):
+                    try:
+                        updated_at = datetime.fromisoformat(updated_at).strftime('%d-%m-%Y %H:%M')
+                    except:
+                        updated_at = 'Onbekend'
+
+                st.text(f"Upload datum: {upload_date}")
+                st.text(f"Laatst gewijzigd: {updated_at}")
+                st.text(f"Bestandsnaam: {receipt.get('filename', 'Onbekend')}")
+                st.text(f"Status: {receipt.get('processing_status', 'Onbekend')}")
+
+                error_msg = receipt.get('error_message')
+                if error_msg:
+                    st.error(f"Error: {error_msg}")
+
+        except Exception as e:
+            logger.error(f"Error loading receipt details: {e}")
+            st.error(f"Fout bij laden van bon details: {str(e)}")

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc
 
-from database.models import Receipt, ExtractedData, User, AuditLog
+from database.models import Receipt, ExtractedData, User, AuditLog, UserSettings, CategoryTaxRule
 from database.connection import get_db
 
 logger = logging.getLogger(__name__)
@@ -449,3 +449,94 @@ def get_receipts_for_export(
     except Exception as e:
         logger.error(f"Error getting receipts for export: {e}")
         return []
+
+def get_category_tax_rules(user_settings_id: int = 1) -> Dict[str, Dict[str, float]]:
+    """
+    Get category-specific tax deduction rules from database.
+
+    Args:
+        user_settings_id: ID of user settings (default: 1 for single-user mode)
+
+    Returns:
+        Dictionary mapping category names to their tax percentages
+    """
+    try:
+        db = next(get_db())
+
+        rules = db.query(CategoryTaxRule).filter(
+            CategoryTaxRule.user_settings_id == user_settings_id
+        ).all()
+
+        result = {}
+        for rule in rules:
+            result[rule.category_name] = {
+                'vat_deductible': rule.vat_deductible_percentage,
+                'ib_deductible': rule.ib_deductible_percentage
+            }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error getting category tax rules: {e}")
+        return {}
+
+def save_category_tax_rules(rules: Dict[str, Dict[str, float]], user_settings_id: int = 1):
+    """
+    Save category-specific tax deduction rules to database.
+
+    Args:
+        rules: Dictionary mapping category names to their tax percentages
+        user_settings_id: ID of user settings (default: 1 for single-user mode)
+    """
+    try:
+        db = next(get_db())
+
+        # Delete existing rules for this user
+        db.query(CategoryTaxRule).filter(
+            CategoryTaxRule.user_settings_id == user_settings_id
+        ).delete()
+
+        # Create new rules
+        for category_name, percentages in rules.items():
+            rule = CategoryTaxRule(
+                user_settings_id=user_settings_id,
+                category_name=category_name,
+                vat_deductible_percentage=percentages['vat'],
+                ib_deductible_percentage=percentages['ib']
+            )
+            db.add(rule)
+
+        db.commit()
+        logger.info(f"Saved {len(rules)} category tax rules for user_settings_id {user_settings_id}")
+
+    except Exception as e:
+        logger.error(f"Error saving category tax rules: {e}")
+        db.rollback()
+
+def ensure_user_settings_exists(user_id: int = 1) -> int:
+    """
+    Ensure UserSettings record exists for the user.
+
+    Args:
+        user_id: User ID (default: 1 for single-user mode)
+
+    Returns:
+        UserSettings ID
+    """
+    try:
+        db = next(get_db())
+
+        settings = db.query(UserSettings).filter(UserSettings.user_id == user_id).first()
+
+        if not settings:
+            settings = UserSettings(user_id=user_id)
+            db.add(settings)
+            db.commit()
+            db.refresh(settings)
+            logger.info(f"Created UserSettings for user_id {user_id}")
+
+        return settings.id
+
+    except Exception as e:
+        logger.error(f"Error ensuring user settings exists: {e}")
+        return 1

@@ -1,0 +1,80 @@
+[
+  {
+    "id": 1,
+    "filename": "Receipt-2289-9865-3750.pdf",
+    "file_path": "c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\\receipt_data\\receipts\\1_Receipt-2289-9865-3750.pdf",
+    "file_size": 32025,
+    "file_type": "application/pdf",
+    "upload_date": "2025-10-20T11:56:07.911885",
+    "processing_status": "pending",
+    "extracted_data": {},
+    "error_message": null,
+    "created_at": "2025-10-20T11:56:07.911885",
+    "updated_at": "2025-10-20T11:56:07.911885"
+  },
+  {
+    "id": 2,
+    "filename": "Receipt-2289-9865-3750.pdf",
+    "file_path": "c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\\receipt_data\\receipts\\2_Receipt-2289-9865-3750.pdf",
+    "file_size": 32025,
+    "file_type": "application/pdf",
+    "upload_date": "2025-10-20T11:56:56.303849",
+    "processing_status": "pending",
+    "extracted_data": {},
+    "error_message": null,
+    "created_at": "2025-10-20T11:56:56.303849",
+    "updated_at": "2025-10-20T11:56:56.303849"
+  },
+  {
+    "id": 3,
+    "filename": "Receipt-2289-9865-3750.pdf",
+    "file_path": "c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\\receipt_data\\receipts\\3_Receipt-2289-9865-3750.pdf",
+    "file_size": 32025,
+    "file_type": "application/pdf",
+    "upload_date": "2025-10-20T11:57:58.565487",
+    "processing_status": "pending",
+    "extracted_data": {},
+    "error_message": null,
+    "created_at": "2025-10-20T11:57:58.565487",
+    "updated_at": "2025-10-20T11:57:58.565487"
+  },
+  {
+    "id": 4,
+    "filename": "Receipt-2289-9865-3750.pdf",
+    "file_path": "c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\\receipt_data\\receipts\\4_Receipt-2289-9865-3750.pdf",
+    "file_size": 32025,
+    "file_type": "application/pdf",
+    "upload_date": "2025-10-20T11:58:16.879191",
+    "processing_status": "pending",
+    "extracted_data": {},
+    "error_message": null,
+    "created_at": "2025-10-20T11:58:16.879191",
+    "updated_at": "2025-10-20T11:58:16.879191"
+  },
+  {
+    "id": 5,
+    "filename": "Receipt-2289-9865-3750.pdf",
+    "file_path": "c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\\receipt_data\\receipts\\5_Receipt-2289-9865-3750.pdf",
+    "file_size": 32025,
+    "file_type": "application/pdf",
+    "upload_date": "2025-10-20T12:01:17.467491",
+    "processing_status": "pending",
+    "extracted_data": {},
+    "error_message": null,
+    "created_at": "2025-10-20T12:01:17.467491",
+    "updated_at": "2025-10-20T12:01:17.467491"
+  },
+  {
+    "id": 6,
+    "filename": "Receipt-2289-9865-3750.pdf",
+    "file_path": "c:\\Users\\hasan.atesci\\Documents\\VSCode\\Personal stuff\\Administration Automation\\receipt_data\\receipts\\6_Receipt-2289-9865-3750.pdf",
+    "file_size": 32025,
+    "file_type": "application/pdf",
+    "upload_date": "2025-10-20T12:04:40.137366",
+    "processing_status": "pending",
+    "extracted_data": {},
+    "error_message": null,
+    "created_at": "2025-10-20T12:04:40.137366",
+    "updated_at": "2025-10-20T12:04:40.137366"
+  }
+]

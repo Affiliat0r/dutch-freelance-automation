@@ -14,7 +14,7 @@ import io
 from config import Config
 from services.processing_pipeline import ReceiptProcessor
 from utils.file_utils import validate_file, save_uploaded_file
-from utils.database_utils import save_receipt_to_db
+from utils.database_utils_local import save_receipt_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -453,17 +453,13 @@ def display_processing_results(results, successful, failed, total_files, contain
         st.markdown("---")
 
         # Action buttons
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
 
         with col1:
             if st.button("📋 Naar Bonnen Beheer", use_container_width=True):
-                st.switch_page("pages/receipt_management.py")
+                st.session_state['selected_page'] = "Bonnen Beheer"
+                st.rerun()
 
         with col2:
             if st.button("🆕 Meer Uploaden", use_container_width=True):
                 st.rerun()
-
-        with col3:
-            if successful > 0:
-                if st.button("💾 Export naar Excel", use_container_width=True):
-                    st.switch_page("pages/export_reports.py")

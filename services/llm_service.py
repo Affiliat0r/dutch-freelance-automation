@@ -9,6 +9,7 @@ from PIL import Image
 import PyPDF2
 
 from config import Config
+from utils.database_utils import get_category_tax_rules, ensure_user_settings_exists
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +235,8 @@ Return ONLY the category name exactly as listed above, nothing else.
 
     def _apply_tax_rules(self, category: str) -> Dict:
         """
-        STEP 4: Apply rule-based Dutch tax deduction rules.
+        STEP 4: Apply rule-based Dutch tax deduction rules FROM DATABASE.
+        This reads the tax percentages from the Instellingen page (BTW & Belasting tab).
 
         Args:
             category: Expense category
@@ -242,8 +244,14 @@ Return ONLY the category name exactly as listed above, nothing else.
         Returns:
             Dictionary with BTW and IB aftrekbaar percentages
         """
-        # Dutch tax rules for each category
-        tax_rules = {
+        # Get user settings ID
+        user_settings_id = ensure_user_settings_exists(user_id=1)
+
+        # Get tax rules from database
+        tax_rules_db = get_category_tax_rules(user_settings_id)
+
+        # Default fallback values if database is empty
+        default_tax_rules = {
             'Beroepskosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
             'Kantoorkosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
             'Reis- en verblijfkosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
@@ -253,11 +261,20 @@ Return ONLY the category name exactly as listed above, nothing else.
             'Zakelijke opleidingskosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100}
         }
 
-        rules = tax_rules.get(category, {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100})
+        # Use database rules if available, otherwise use defaults
+        if category in tax_rules_db:
+            btw_aftrekbaar = tax_rules_db[category]['vat_deductible']
+            ib_aftrekbaar = tax_rules_db[category]['ib_deductible']
+            logger.info(f"Using database tax rules for {category}: BTW {btw_aftrekbaar}%, IB {ib_aftrekbaar}%")
+        else:
+            default_rule = default_tax_rules.get(category, {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100})
+            btw_aftrekbaar = default_rule['btw_aftrekbaar']
+            ib_aftrekbaar = default_rule['ib_aftrekbaar']
+            logger.info(f"Using default tax rules for {category}: BTW {btw_aftrekbaar}%, IB {ib_aftrekbaar}%")
 
         return {
-            'vat_deductible_percentage': rules['btw_aftrekbaar'],
-            'ib_deductible_percentage': rules['ib_aftrekbaar']
+            'vat_deductible_percentage': btw_aftrekbaar,
+            'ib_deductible_percentage': ib_aftrekbaar
         }
 
     def _calculate_tax_amounts(self, structured_data: Dict) -> Dict:

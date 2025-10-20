@@ -52,6 +52,23 @@ class UserSettings(Base):
 
     # Relationships
     user = relationship("User", back_populates="settings")
+    category_tax_rules = relationship("CategoryTaxRule", back_populates="user_settings", cascade="all, delete-orphan")
+
+class CategoryTaxRule(Base):
+    """Category-specific tax deduction rules."""
+
+    __tablename__ = "category_tax_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_settings_id = Column(Integer, ForeignKey("user_settings.id"))
+    category_name = Column(String(100), nullable=False)
+    vat_deductible_percentage = Column(Float, nullable=False, default=100.0)
+    ib_deductible_percentage = Column(Float, nullable=False, default=100.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user_settings = relationship("UserSettings", back_populates="category_tax_rules")
 
 class Receipt(Base):
     """Receipt model for storing uploaded receipt information."""

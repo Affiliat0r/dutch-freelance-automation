@@ -10,7 +10,7 @@ import logging
 
 from config import Config
 from utils.calculations import calculate_vat_summary, calculate_expense_summary
-from utils.database_utils import get_receipt_stats, get_recent_receipts
+from utils.database_utils_local import get_receipt_stats, get_recent_receipts
 
 logger = logging.getLogger(__name__)
 

@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 
 from config import Config
+from utils.database_utils import save_category_tax_rules, get_category_tax_rules, ensure_user_settings_exists
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,23 @@ def show_tax_settings():
 
     st.markdown("Stel standaard aftrekpercentages in per categorie:")
 
+    # Ensure user settings exists
+    user_settings_id = ensure_user_settings_exists(user_id=1)
+
+    # Load existing tax rules from database
+    existing_rules = get_category_tax_rules(user_settings_id)
+
+    # Default values
+    default_values = {
+        'Beroepskosten': {'vat': 100, 'ib': 100},
+        'Kantoorkosten': {'vat': 100, 'ib': 100},
+        'Reis- en verblijfkosten': {'vat': 100, 'ib': 100},
+        'Representatiekosten - Type 1 (Supermarket)': {'vat': 0, 'ib': 80},
+        'Representatiekosten - Type 2 (Horeca)': {'vat': 0, 'ib': 80},
+        'Vervoerskosten': {'vat': 100, 'ib': 100},
+        'Zakelijke opleidingskosten': {'vat': 100, 'ib': 100}
+    }
+
     categories_settings = {}
 
     for category in Config.EXPENSE_CATEGORIES:
@@ -164,12 +182,20 @@ def show_tax_settings():
         with col1:
             st.text(category)
 
+        # Get value from database or use default
+        if category in existing_rules:
+            default_vat = int(existing_rules[category]['vat_deductible'])
+            default_ib = int(existing_rules[category]['ib_deductible'])
+        else:
+            default_vat = default_values.get(category, {}).get('vat', 100)
+            default_ib = default_values.get(category, {}).get('ib', 100)
+
         with col2:
             vat_deductible = st.number_input(
                 "BTW %",
                 min_value=0,
                 max_value=100,
-                value=100 if "Representatie" not in category else 0,
+                value=default_vat,
                 key=f"vat_{category}",
                 label_visibility="collapsed"
             )
@@ -179,7 +205,7 @@ def show_tax_settings():
                 "IB %",
                 min_value=0,
                 max_value=100,
-                value=80 if "Representatie" in category else 100,
+                value=default_ib,
                 key=f"ib_{category}",
                 label_visibility="collapsed"
             )
@@ -208,7 +234,9 @@ def show_tax_settings():
         )
 
     if st.button("💾 BTW Instellingen Opslaan", type="primary"):
-        st.success("✅ BTW instellingen opgeslagen!")
+        # Save to database
+        save_category_tax_rules(categories_settings, user_settings_id)
+        st.success("✅ BTW instellingen opgeslagen in database!")
 
 def show_system_settings():
     """Show system settings."""

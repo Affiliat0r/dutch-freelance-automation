@@ -10,6 +10,7 @@ import logging
 from typing import List
 from PIL import Image
 import io
+import time
 
 from config import Config
 from services.processing_pipeline import ReceiptProcessor
@@ -18,6 +19,163 @@ from utils.database_utils_local import save_receipt_to_db
 from utils.local_storage import save_receipt as save_to_json, update_receipt_data
 
 logger = logging.getLogger(__name__)
+
+def show_manual_extraction_form(receipt_id, filename, auto_extracted_data):
+    """
+    Show manual data entry form for receipts with low confidence.
+
+    Args:
+        receipt_id: Receipt ID in database
+        filename: Original filename
+        auto_extracted_data: Automatically extracted data (used as defaults)
+    """
+    st.markdown("---")
+    st.markdown("### ✏️ Handmatige Gegevensinvoer")
+    st.info("Vul de onderstaande velden in of corrigeer de automatisch geëxtraheerde gegevens.")
+
+    with st.form(key=f"manual_form_{receipt_id}"):
+        # General Information
+        st.markdown("#### 📋 Algemene Informatie")
+        col1, col2 = st.columns(2)
+
+        with col1:
+            vendor_name = st.text_input(
+                "Leverancier/Winkel *",
+                value=auto_extracted_data.get('vendor_name', ''),
+                help="Naam van de winkel of leverancier"
+            )
+            transaction_date = st.date_input(
+                "Datum *",
+                value=datetime.strptime(auto_extracted_data.get('date', datetime.now().strftime('%Y-%m-%d')), '%Y-%m-%d').date() if auto_extracted_data.get('date') else datetime.now().date(),
+                help="Datum van de transactie"
+            )
+
+        with col2:
+            invoice_number = st.text_input(
+                "Factuurnummer",
+                value=auto_extracted_data.get('invoice_number', ''),
+                help="Factuurnummer indien beschikbaar"
+            )
+            category = st.selectbox(
+                "Categorie *",
+                Config.EXPENSE_CATEGORIES,
+                index=Config.EXPENSE_CATEGORIES.index(auto_extracted_data.get('category', Config.EXPENSE_CATEGORIES[0])) if auto_extracted_data.get('category') in Config.EXPENSE_CATEGORIES else 0,
+                help="Selecteer de juiste categorie voor deze uitgave"
+            )
+
+        # Amounts
+        st.markdown("#### 💶 Bedragen")
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            total_amount = st.number_input(
+                "Totaal incl. BTW (€) *",
+                min_value=0.0,
+                value=float(auto_extracted_data.get('total_amount', 0)),
+                step=0.01,
+                format="%.2f",
+                help="Totaalbedrag inclusief BTW"
+            )
+
+        with col2:
+            vat_6 = st.number_input(
+                "BTW 6% (€)",
+                min_value=0.0,
+                value=float(auto_extracted_data.get('vat_breakdown', {}).get('6', 0)),
+                step=0.01,
+                format="%.2f"
+            )
+            vat_9 = st.number_input(
+                "BTW 9% (€)",
+                min_value=0.0,
+                value=float(auto_extracted_data.get('vat_breakdown', {}).get('9', 0)),
+                step=0.01,
+                format="%.2f"
+            )
+
+        with col3:
+            vat_21 = st.number_input(
+                "BTW 21% (€)",
+                min_value=0.0,
+                value=float(auto_extracted_data.get('vat_breakdown', {}).get('21', 0)),
+                step=0.01,
+                format="%.2f"
+            )
+
+        # Notes
+        st.markdown("#### 📝 Opmerkingen")
+        notes = st.text_area(
+            "Toelichting/Motivatie",
+            value=auto_extracted_data.get('notes', ''),
+            help="Eventuele opmerkingen of toelichting bij deze uitgave",
+            height=100
+        )
+
+        # Submit button
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col2:
+            submit_button = st.form_submit_button("💾 Opslaan", use_container_width=True, type="primary")
+
+        if submit_button:
+            # Validate required fields
+            if not vendor_name or not transaction_date or total_amount <= 0:
+                st.error("❌ Vul alle verplichte velden (*) correct in!")
+                return
+
+            # Calculate amounts
+            total_vat = vat_6 + vat_9 + vat_21
+            amount_excl_vat = total_amount - total_vat
+
+            # Get tax rules for category
+            from services.llm_service import LLMService
+            llm_service = LLMService()
+            tax_percentages = llm_service._apply_tax_rules(category)
+
+            # Calculate tax amounts
+            vat_deductible = total_vat * (tax_percentages['vat_deductible_percentage'] / 100)
+            remainder_after_vat = total_amount - vat_deductible
+            profit_deduction = amount_excl_vat * (tax_percentages['ib_deductible_percentage'] / 100)
+
+            # Create updated data dictionary
+            updated_data = {
+                'vendor_name': vendor_name,
+                'date': transaction_date.strftime('%Y-%m-%d'),
+                'invoice_number': invoice_number,
+                'category': category,
+                'total_amount': total_amount,
+                'vat_breakdown': {
+                    '6': vat_6,
+                    '9': vat_9,
+                    '21': vat_21
+                },
+                'amount_excl_vat': amount_excl_vat,
+                'vat_deductible_percentage': tax_percentages['vat_deductible_percentage'],
+                'ib_deductible_percentage': tax_percentages['ib_deductible_percentage'],
+                'vat_deductible_amount': vat_deductible,
+                'remainder_after_vat': remainder_after_vat,
+                'profit_deduction': profit_deduction,
+                'notes': notes,
+                'confidence': 1.0,  # Manual entry = 100% confidence
+                'manual_entry': True
+            }
+
+            # Update receipt in storage
+            try:
+                update_receipt_data(receipt_id, updated_data)
+                st.success("✅ Gegevens succesvol opgeslagen!")
+                st.balloons()
+
+                # Clear the form from session state
+                if f'show_manual_form_{receipt_id}' in st.session_state:
+                    del st.session_state[f'show_manual_form_{receipt_id}']
+
+                # Wait a moment and rerun to show updated data
+                time.sleep(1)
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"❌ Fout bij opslaan: {str(e)}")
+                logger.error(f"Error saving manual entry: {e}")
 
 def show():
     """Display the receipt upload page."""
@@ -151,8 +309,38 @@ def show_zip_upload():
 
                 st.markdown("---")
 
-                if st.button("🚀 Verwerk ZIP Bestand", use_container_width=True, type="primary"):
-                    process_zip_file(uploaded_zip, zip_ref, valid_files)
+                # Processing options (same as file upload)
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    auto_categorize = st.checkbox("Automatisch categoriseren", value=True, key="zip_auto_categorize")
+                    extract_items = st.checkbox("Individuele items extraheren", value=True, key="zip_extract_items")
+
+                with col2:
+                    manual_review = st.checkbox("Handmatige review vereist", value=False, key="zip_manual_review")
+
+                # Category override
+                category_override = st.selectbox(
+                    "Categorie overschrijven (optioneel):",
+                    ["Automatisch"] + Config.EXPENSE_CATEGORIES,
+                    help="Selecteer een categorie om toe te passen op alle uploads",
+                    key="zip_category_override"
+                )
+
+                st.markdown("---")
+
+                col1, col2, col3 = st.columns([1, 2, 1])
+                with col2:
+                    if st.button("🚀 Start Verwerking", use_container_width=True, type="primary"):
+                        process_zip_file(
+                            uploaded_zip,
+                            zip_ref,
+                            valid_files,
+                            auto_categorize=auto_categorize,
+                            extract_items=extract_items,
+                            manual_review=manual_review,
+                            category_override=None if category_override == "Automatisch" else category_override
+                        )
 
         except Exception as e:
             st.error(f"❌ Fout bij lezen ZIP bestand: {str(e)}")
@@ -212,6 +400,17 @@ def process_uploads(
     failed = 0
     results = []
 
+    # Show info for many files
+    if total_files > 10:
+        st.info(f"""
+        ℹ️ **Let op:** U uploadt {total_files} bestanden.
+
+        De bestanden worden één voor één verwerkt. Bij API-limieten wordt
+        automatisch opnieuw geprobeerd met intelligente wachttijden.
+
+        Laat dit venster open tijdens de verwerking.
+        """)
+
     # Initialize services
     processor = ReceiptProcessor()
 
@@ -219,6 +418,7 @@ def process_uploads(
         # Update progress
         progress = (idx + 1) / total_files
         progress_bar.progress(progress)
+
         status_text.text(f"Verwerken: {file.name} ({idx + 1}/{total_files})")
 
         try:
@@ -292,7 +492,15 @@ def process_uploads(
     # Show results
     display_processing_results(results, successful, failed, total_files, results_container)
 
-def process_zip_file(uploaded_zip, zip_ref, valid_files):
+def process_zip_file(
+    uploaded_zip,
+    zip_ref,
+    valid_files,
+    auto_categorize: bool = True,
+    extract_items: bool = True,
+    manual_review: bool = False,
+    category_override: str = None
+):
     """Process ZIP file with multiple receipts."""
 
     progress_bar = st.progress(0)
@@ -302,6 +510,19 @@ def process_zip_file(uploaded_zip, zip_ref, valid_files):
     # Extract ZIP to temp directory
     extract_path = Config.TEMP_FOLDER / f"extract_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     extract_path.mkdir(parents=True, exist_ok=True)
+
+    total_files = len(valid_files)
+
+    # Show info for many files
+    if total_files > 10:
+        st.info(f"""
+        ℹ️ **Let op:** ZIP bevat {total_files} bestanden.
+
+        De bestanden worden één voor één verwerkt. Bij API-limieten wordt
+        automatisch opnieuw geprobeerd met intelligente wachttijden.
+
+        Laat dit venster open tijdens de verwerking.
+        """)
 
     try:
         zip_ref.extractall(extract_path)
@@ -315,6 +536,7 @@ def process_zip_file(uploaded_zip, zip_ref, valid_files):
         for idx, file_name in enumerate(valid_files):
             progress = (idx + 1) / len(valid_files)
             progress_bar.progress(progress)
+
             status_text.text(f"Verwerken: {file_name} ({idx + 1}/{len(valid_files)})")
 
             try:
@@ -347,7 +569,10 @@ def process_zip_file(uploaded_zip, zip_ref, valid_files):
                         'status': 'Succesvol',
                         'receipt_id': receipt_id,
                         'data': result.get('data', {}),
-                        'category': result['data'].get('category', 'Onbekend')
+                        'raw_text': result.get('raw_text', ''),  # Step 1
+                        'structured_data_json': result.get('structured_data_json', ''),  # Step 2
+                        'extracted_category': result.get('extracted_category', ''),  # Step 3
+                        'category': category_override or result['data'].get('category', 'Onbekend')
                     })
                     successful += 1
                 else:
@@ -457,6 +682,14 @@ def display_processing_results(results, successful, failed, total_files, contain
                     confidence = data.get('confidence', 0)
                     if confidence < 0.7:
                         st.warning(f"⚠️ Lage betrouwbaarheid: {confidence:.0%} - Handmatige review aanbevolen")
+
+                        # Offer manual extraction option
+                        if st.button(f"✏️ Handmatig invoeren", key=f"manual_extract_{result.get('receipt_id', idx)}", use_container_width=True):
+                            st.session_state[f'show_manual_form_{result.get("receipt_id", idx)}'] = True
+
+                        # Show manual extraction form if button was clicked
+                        if st.session_state.get(f'show_manual_form_{result.get("receipt_id", idx)}', False):
+                            show_manual_extraction_form(result.get('receipt_id'), result['file'], data)
                     else:
                         st.success(f"✓ Betrouwbaarheid: {confidence:.0%}")
 

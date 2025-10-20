@@ -7,6 +7,8 @@ from pathlib import Path
 import google.generativeai as genai
 from PIL import Image
 import PyPDF2
+import time
+from google.api_core import exceptions as google_exceptions
 
 from config import Config
 from utils.database_utils import get_category_tax_rules, ensure_user_settings_exists
@@ -24,6 +26,53 @@ class LLMService:
         else:
             logger.warning("Gemini API key not configured")
             self.model = None
+
+    def _call_with_retry(self, api_call_func, *args, retry_delay=5, max_retries=50, **kwargs):
+        """
+        Call Gemini API with constant retry delay - spam the API until it goes through.
+
+        Strategy: Keep trying every 5 seconds until the API call succeeds.
+        This is more efficient than waiting between receipts.
+
+        Args:
+            api_call_func: Function to call (e.g., self.model.generate_content)
+            retry_delay: Constant delay between retries in seconds (default 5s)
+            max_retries: Maximum number of retry attempts (default 50 = ~4 minutes of trying)
+            *args, **kwargs: Arguments to pass to the API function
+
+        Returns:
+            API response
+
+        Raises:
+            Exception if all retries fail
+        """
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = api_call_func(*args, **kwargs)
+                return response
+
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+
+                # Check if it's a quota/rate limit error
+                if 'quota' in error_str or 'rate' in error_str or '429' in error_str or 'resource' in error_str:
+                    if attempt < max_retries:
+                        logger.warning(f"Rate limit hit. Retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries + 1})")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        logger.error(f"Max retries reached. Rate limit error: {e}")
+                        raise Exception(f"Gemini API rate limit exceeded after {max_retries + 1} retries. Please wait and try again later.")
+                else:
+                    # Non-quota error, don't retry
+                    logger.error(f"API error (not rate limit): {e}")
+                    raise
+
+        # Should not reach here, but just in case
+        raise last_error
 
     def process_receipt_file(self, file_path: str) -> Dict:
         """
@@ -118,7 +167,7 @@ Include:
 
 Return only the raw text, line by line as it appears on the receipt.
 """
-        response = self.model.generate_content([prompt, image])
+        response = self._call_with_retry(self.model.generate_content, [prompt, image])
         return response.text
 
     def _text_to_structured_data(self, raw_text: str) -> Dict:
@@ -176,7 +225,7 @@ IMPORTANT RULES:
 
 Return ONLY valid JSON, no additional text.
 """
-        response = self.model.generate_content(prompt)
+        response = self._call_with_retry(self.model.generate_content, prompt)
         return self._parse_json_response(response.text)
 
     def _extract_category(self, structured_data: Dict) -> str:
@@ -223,7 +272,7 @@ Category Guidelines:
 
 Return ONLY the category name exactly as listed above, nothing else.
 """
-        response = self.model.generate_content(prompt)
+        response = self._call_with_retry(self.model.generate_content, prompt)
         category = response.text.strip()
 
         # Validate category

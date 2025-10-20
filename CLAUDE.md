@@ -9,9 +9,9 @@ This is a **Dutch Freelance Administration Automation** application built with S
 **Key Technologies:**
 - **Frontend/UI:** Streamlit with custom CSS
 - **AI/ML:** Google Gemini API (gemini-2.5-flash-lite model) for end-to-end receipt processing
-- **Database:** PostgreSQL (SQLAlchemy ORM), SQLite for development
-- **Caching:** Redis (configured but optional)
-- **Image Processing:** Pillow, OpenCV (legacy)
+- **Storage:** Dual system - SQLAlchemy ORM (database) + Local JSON file storage
+- **Database:** PostgreSQL (production), SQLite (development)
+- **Image Processing:** Pillow, PyPDF2
 - **Data Processing:** Pandas, NumPy, openpyxl
 
 ## Development Setup
@@ -21,7 +21,6 @@ This is a **Dutch Freelance Administration Automation** application built with S
 1. Copy `.env.example` to `.env` and configure:
    - `GEMINI_API_KEY`: **Required** - Get from [Google AI Studio](https://aistudio.google.com/app/apikey)
    - `DATABASE_URL`: PostgreSQL connection string (defaults to SQLite if not set)
-   - `REDIS_URL`: Redis connection string (optional, for caching/async processing)
    - `SECRET_KEY`: Security key for authentication
 
 2. Install dependencies:
@@ -29,73 +28,58 @@ This is a **Dutch Freelance Administration Automation** application built with S
    pip install -r requirements.txt
    ```
 
-3. Initialize database:
+3. Run the application:
    ```bash
-   # Database initialization is handled automatically on app startup
-   # See app.py:262-263 - calls init_db() from database.connection
+   streamlit run app.py
    ```
-
-### Running the Application
-
-```bash
-streamlit run app.py
-```
 
 The app will be available at `http://localhost:8501`
 
-### Running Tests
-
-```bash
-pytest                           # Run all tests
-pytest -v                        # Verbose mode
-pytest tests/test_specific.py    # Single test file
-```
-
-### Database Migrations
-
-The project includes Alembic for database migrations:
-
-```bash
-# Initialize Alembic (already done)
-alembic init alembic
-
-# Create a new migration after model changes
-alembic revision --autogenerate -m "Description of changes"
-
-# Apply migrations
-alembic upgrade head
-
-# Rollback migration
-alembic downgrade -1
-```
+**Note:** Database initialization happens automatically on app startup ([app.py:266-267](app.py#L266-L267)).
 
 ## Architecture
 
+### Dual Storage System
+
+**CRITICAL:** The application uses **two parallel storage systems**:
+
+1. **Database Storage** ([database/models.py](database/models.py), [utils/database_utils.py](utils/database_utils.py))
+   - SQLAlchemy ORM with User, Receipt, ExtractedData, UserSettings models
+   - Used for full relational data with user authentication
+   - Currently partially implemented
+
+2. **Local File Storage** ([utils/local_storage.py](utils/local_storage.py)) **← ACTIVELY USED**
+   - JSON-based storage in `receipt_data/receipts_metadata.json`
+   - Receipt files stored in `receipt_data/receipts/`
+   - Simpler, no database setup required
+   - Functions: `save_receipt()`, `update_receipt_status()`, `get_all_receipts()`, `filter_receipts()`
+
+**Current modules primarily use local storage.** When adding features, check which storage system the module uses before implementing.
+
 ### Four-Step Gemini Processing Pipeline
 
-The application uses a **Gemini-only processing pipeline** ([services/processing_pipeline.py](services/processing_pipeline.py)) with these steps:
+The application uses a **Gemini-only processing pipeline** ([services/processing_pipeline.py](services/processing_pipeline.py)):
 
-**Step 1: Image/PDF → Raw Text** ([services/llm_service.py:94-122](services/llm_service.py#L94-L122))
-- For PDFs: Direct text extraction using PyPDF2 (digital receipts)
-- For images: Gemini Vision API extracts raw text (physical receipts)
-- No Tesseract OCR required - Gemini Vision handles everything
+**Step 1: Image/PDF → Raw Text** ([services/llm_service.py:95-122](services/llm_service.py#L95-L122))
+- PDFs: Direct text extraction using PyPDF2 (digital receipts)
+- Images: Gemini Vision API extracts raw text (physical receipts)
+- No Tesseract OCR - Gemini Vision handles everything
 
-**Step 2: Raw Text → Structured Data** ([services/llm_service.py:123-180](services/llm_service.py#L123-L180))
+**Step 2: Raw Text → Structured Data** ([services/llm_service.py:124-180](services/llm_service.py#L124-L180))
 - Gemini parses raw text into JSON structure
 - Extracts: vendor, date, items, amounts, VAT breakdown, payment method
 - Dutch receipt format aware (BTW, Totaal, etc.)
 
-**Step 3: Structured Data → Category** ([services/llm_service.py:181-234](services/llm_service.py#L181-L234))
+**Step 3: Structured Data → Category** ([services/llm_service.py:182-234](services/llm_service.py#L182-L234))
 - Gemini categorizes expense using Dutch tax categories
-- Returns one of 7 predefined categories (Beroepskosten, Kantoorkosten, etc.)
+- Returns one of 7 predefined categories
 - Validates category against allowlist
 
-**Step 4: Category → Tax Percentages** ([services/llm_service.py:235-292](services/llm_service.py#L235-L292))
-- Python rule-based logic applies Dutch tax rules
-- Sets BTW aftrekbaar % and IB aftrekbaar % based on category
+**Step 4: Category → Tax Percentages** ([services/llm_service.py:236-278](services/llm_service.py#L236-L278))
+- Python rule-based logic applies Dutch tax rules FROM DATABASE
+- Reads tax percentages from UserSettings (Instellingen page → BTW & Belasting tab)
+- Falls back to default rules if database settings don't exist
 - Calculates: VAT refund, remainder after VAT, profit deduction
-
-**Note:** OCR Service ([services/ocr_service.py](services/ocr_service.py)) exists but is **not used** in current pipeline. The Gemini Vision approach proved more accurate and eliminated the need for traditional OCR preprocessing.
 
 ### Application Structure
 
@@ -128,12 +112,12 @@ config.py                       # Centralized configuration management
 ### Data Flow
 
 1. User uploads receipt(s) via [modules/upload_receipts.py](modules/upload_receipts.py)
-2. Receipt saved to database with status="pending"
+2. Receipt saved to **local storage** ([utils/local_storage.py](utils/local_storage.py)) with status="pending"
 3. [services/processing_pipeline.py](services/processing_pipeline.py) orchestrates processing:
-   - Calls [services/llm_service.py](services/llm_service.py) for 4-step extraction
-   - Saves extracted data via [utils/database_utils.py](utils/database_utils.py)
+   - Calls [services/llm_service.py](services/llm_service.py) for 4-step Gemini extraction
+   - For local storage: Updates receipt via `update_receipt_data()`
+   - For database: Saves via [utils/database_utils.py](utils/database_utils.py)
    - Updates receipt status to "completed" or "failed"
-   - Creates audit log entry
 4. User reviews/edits in [modules/receipt_management.py](modules/receipt_management.py)
 5. User exports data in [modules/export_reports.py](modules/export_reports.py)
 
@@ -156,21 +140,12 @@ The application uses specific Dutch expense categories defined in [config.py:58-
 
 ### Tax Calculation Logic
 
-Tax rules are defined in [services/llm_service.py:235-261](services/llm_service.py#L235-L261):
+**Tax percentages are loaded FROM DATABASE** ([services/llm_service.py:236-278](services/llm_service.py#L236-L278)):
+- Function `_apply_tax_rules()` calls `get_category_tax_rules(user_settings_id)` from database
+- Users configure percentages in Instellingen page → BTW & Belasting tab
+- Default fallback values are hardcoded if database is empty
 
-```python
-tax_rules = {
-    'Beroepskosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
-    'Kantoorkosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
-    'Reis- en verblijfkosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
-    'Representatiekosten - Type 1 (Supermarket)': {'btw_aftrekbaar': 0, 'ib_aftrekbaar': 80},
-    'Representatiekosten - Type 2 (Horeca)': {'btw_aftrekbaar': 0, 'ib_aftrekbaar': 80},
-    'Vervoerskosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100},
-    'Zakelijke opleidingskosten': {'btw_aftrekbaar': 100, 'ib_aftrekbaar': 100}
-}
-```
-
-**Calculation formulas** ([services/llm_service.py:263-292](services/llm_service.py#L263-L292)):
+**Calculation formulas** ([services/llm_service.py:280-308](services/llm_service.py#L280-L308)):
 - `amount_excl_vat = total_amount - total_vat`
 - `vat_deductible = total_vat × (btw_percentage / 100)`
 - `remainder_after_vat = total_amount - vat_deductible`
@@ -206,24 +181,27 @@ Use [utils/session_state.py](utils/session_state.py) for all Streamlit session s
 - `set_session_value(key, value)` - Store values
 - `cache_analytics_data(key, data, ttl)` - Cache expensive computations
 
-### Database Models
+### Storage Operations
 
-All models use SQLAlchemy declarative base ([database/models.py](database/models.py)):
+**For Local File Storage** ([utils/local_storage.py](utils/local_storage.py)) **← PRIMARY SYSTEM**:
+- `save_receipt(file_path, filename, file_size, file_type, extracted_data)` - Save receipt
+- `update_receipt_status(receipt_id, status, error_message)` - Update status
+- `update_receipt_data(receipt_id, extracted_data)` - Update extracted data
+- `get_receipt(receipt_id)` - Get single receipt
+- `get_all_receipts()` - Get all receipts
+- `filter_receipts(start_date, end_date, status, categories, vendor, min_amount, max_amount)` - Filter
+- `delete_receipt(receipt_id)` - Delete receipt and file
+- `get_statistics(start_date, end_date)` - Get stats
 
-**Key relationships:**
-- `User` → `Receipt` (one-to-many via `receipts`)
-- `User` → `UserSettings` (one-to-one via `settings`)
-- `Receipt` → `ExtractedData` (one-to-one via `extracted_data`)
-- `Receipt` → `AuditLog` (one-to-many via `audit_logs`)
-
-**Important:** Use `Numeric(12, 2)` for all currency amounts to avoid floating-point precision issues. Never use `Float` for money.
-
-### Database Operations
-
-Use helper functions from [utils/database_utils.py](utils/database_utils.py) instead of raw SQLAlchemy:
+**For Database Operations** ([utils/database_utils.py](utils/database_utils.py)):
 - `save_extracted_data(receipt_id, data_dict)` - Save extraction results
 - `update_receipt_status(receipt_id, status, error=None)` - Update processing status
-- `log_audit_event(user_id, action, entity_type, entity_id, ...)` - Create audit trail
+- `get_category_tax_rules(user_settings_id)` - Get tax percentages from Instellingen
+- `ensure_user_settings_exists(user_id)` - Create default settings if needed
+
+**Database Models** ([database/models.py](database/models.py)):
+- `User`, `Receipt`, `ExtractedData`, `UserSettings`, `AuditLog`
+- **Important:** Use `Numeric(12, 2)` for currency amounts, never `Float`
 
 ### Error Handling in Services
 
@@ -277,67 +255,67 @@ Available page names: "Dashboard", "Upload Bonnen", "Bonnen Beheer", "Analytics"
 ### Adding a New Expense Category
 
 1. Add category to [config.py:58-66](config.py#L58-L66) `EXPENSE_CATEGORIES` list
-2. Add tax rules to [services/llm_service.py:246-254](services/llm_service.py#L246-L254) `tax_rules` dict
-3. Update Gemini prompt in [services/llm_service.py:211-222](services/llm_service.py#L211-L222) with category guidelines
-4. Test with sample receipts
-
-### Adding a New Database Model
-
-1. Define model in [database/models.py](database/models.py) using SQLAlchemy declarative base
-2. Create Alembic migration: `alembic revision --autogenerate -m "Add new model"`
-3. Review generated migration in `alembic/versions/`
-4. Apply migration: `alembic upgrade head`
-5. Add CRUD functions to [utils/database_utils.py](utils/database_utils.py)
+2. Add default tax rules to [services/llm_service.py:254-261](services/llm_service.py#L254-L261) `default_tax_rules` dict
+3. Update Gemini prompt in [services/llm_service.py:204-224](services/llm_service.py#L204-L224) with category guidelines
+4. Update Instellingen page ([modules/settings.py](modules/settings.py)) to include new category in tax settings
+5. Test with sample receipts
 
 ### Adding a New Streamlit Page
 
 1. Create new module in `modules/` folder (e.g., `modules/new_page.py`)
 2. Implement `show()` function that renders the page
-3. Add to navigation menu in [app.py:193-200](app.py#L193-L200)
-4. Add icon and routing logic in [app.py:208-254](app.py#L208-L254)
+3. Import module in [app.py](app.py) imports section
+4. Add page name to `menu_options` list ([app.py:193-200](app.py#L193-L200))
+5. Add icon to `option_menu` icons list ([app.py:215-222](app.py#L215-L222))
+6. Add routing logic in main content area ([app.py:247-258](app.py#L247-L258))
 
 ### Modifying Gemini Prompts
 
 All prompts are in [services/llm_service.py](services/llm_service.py):
-- **Step 1 (Raw Text):** Lines 104-119
-- **Step 2 (Structured Data):** Lines 133-177
-- **Step 3 (Category):** Lines 203-224
+- **Step 1 (Raw Text):** Lines 105-120
+- **Step 2 (Structured Data):** Lines 134-178
+- **Step 3 (Category):** Lines 204-225
 
 When changing prompts, test with diverse receipt types (Dutch/English, digital/scanned, various vendors).
 
-## Future Development Areas
+### Working with Local Storage vs Database
 
-Based on [PRD_Administration_Automation.md](PRD_Administration_Automation.md):
-- **Phase 1 (MVP - Current)**: Basic receipt upload, Gemini processing, Excel export
-- **Phase 2**: Advanced analytics, batch processing improvements, email receipt import
-- **Phase 3**: Accounting software integrations (Exact Online, Twinfield)
-- **Phase 4**: Predictive analytics, automated tax advice, mobile app
+**When to use local storage:**
+- Quick prototyping
+- Single-user deployments
+- No authentication needed
+- Simpler deployment without database server
+
+**When to use database:**
+- Multi-user with authentication
+- Complex queries and relationships
+- Need for transactions and data integrity
+- Production deployments
+
+**Current state:** Most modules use local storage. Database is set up for future multi-user support.
 
 ## Troubleshooting
 
 **Gemini API Errors:**
 - Verify `GEMINI_API_KEY` in `.env` file
 - Check API quota limits at [Google AI Studio](https://aistudio.google.com/)
-- Check Gemini API status at [Google Cloud Status](https://status.cloud.google.com/)
-- Review error logs: Gemini errors are logged in [services/llm_service.py:88-92](services/llm_service.py#L88-L92)
+- Review error logs: Gemini errors are logged in [services/llm_service.py:89-93](services/llm_service.py#L89-L93)
 
-**Database Connection Issues:**
-- For PostgreSQL: Verify PostgreSQL is running and `DATABASE_URL` is correct
+**Local Storage Issues:**
+- Data stored in `receipt_data/receipts_metadata.json`
+- Receipt files in `receipt_data/receipts/`
+- Use `cleanup_metadata_file()` from [utils/local_storage.py](utils/local_storage.py) to remove duplicates
+- Check file permissions on these directories
+
+**Database Connection Issues (if using database):**
 - For SQLite: Check file permissions in project directory
-- Database initialization runs on app startup ([app.py:262-263](app.py#L262-L263))
-- Use `drop_db()` from [database/connection.py](database/connection.py) to reset (caution: deletes all data)
+- For PostgreSQL: Verify PostgreSQL is running and `DATABASE_URL` is correct
+- Database initialization runs on app startup ([app.py:266-267](app.py#L266-L267))
 
 **Streamlit Session State Issues:**
 - Use helper functions from [utils/session_state.py](utils/session_state.py)
-- Call `init_session_state()` at app startup ([app.py:172](app.py#L172))
 - Check session state with `st.write(st.session_state)` for debugging
 - Clear cache: `st.cache_data.clear()` or restart Streamlit server
-
-**File Upload Failures:**
-- Check file size limit: [config.py:26-27](config.py#L26-L27)
-- Verify allowed extensions: [config.py:28-30](config.py#L28-L30)
-- Ensure upload directories exist (created automatically by [config.py:88-96](config.py#L88-L96))
-- Check file validation logic in [utils/file_utils.py](utils/file_utils.py)
 
 **Receipt Processing Failures:**
 - Check Gemini API key is valid

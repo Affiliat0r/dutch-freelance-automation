@@ -1,4 +1,4 @@
-"""Export and reports page for generating various output formats."""
+"""Export and reports page for generating various output formats - using REAL local data."""
 
 import streamlit as st
 import pandas as pd
@@ -9,6 +9,8 @@ from typing import Dict, List
 
 from config import Config
 from services.export_service import ExportService
+from utils.local_storage import filter_receipts, get_all_receipts, get_statistics
+from utils.database_utils_local import get_receipts_for_export
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,15 @@ def show():
 
     st.title("📥 Export & Rapporten")
     st.markdown("Exporteer uw administratie in verschillende formaten")
+
+    # Check if there are any receipts
+    all_receipts = get_all_receipts()
+    if not all_receipts:
+        st.warning("⚠️ Geen bonnen gevonden. Upload eerst bonnen om rapporten te genereren.")
+        if st.button("📤 Ga naar Upload Bonnen", use_container_width=True):
+            st.session_state['selected_page'] = "Upload Bonnen"
+            st.rerun()
+        return
 
     # Export type selection
     export_type = st.selectbox(
@@ -58,7 +69,7 @@ def show_vat_declaration_export():
     col1, col2 = st.columns(2)
 
     with col1:
-        year = st.selectbox("Jaar", [2024, 2025, 2023])
+        year = st.selectbox("Jaar", [2025, 2024, 2023])
 
     with col2:
         quarter = st.selectbox(
@@ -76,12 +87,32 @@ def show_vat_declaration_export():
 
     start_date, end_date = quarter_dates[quarter]
 
+    # Get actual receipts for this quarter
+    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+
+    receipts = get_receipts_for_export(
+        user_id=1,
+        date_from=start_dt,
+        date_to=end_dt
+    )
+
     st.markdown("---")
+
+    if not receipts:
+        st.warning(f"⚠️ Geen bonnen gevonden voor {quarter} {year}")
+        return
+
+    # Calculate VAT totals
+    total_vat_6 = sum(r.get('vat_6', 0) for r in receipts)
+    total_vat_9 = sum(r.get('vat_9', 0) for r in receipts)
+    total_vat_21 = sum(r.get('vat_21', 0) for r in receipts)
+    total_vat_refund = sum(r.get('vat_refund', 0) for r in receipts)
 
     # Preview section
     st.markdown("### Voorvertoning BTW Overzicht")
 
-    # Sample VAT data
+    # Real VAT data
     vat_data = {
         'Omschrijving': [
             '1a. Leveringen/diensten belast met hoog tarief',
@@ -91,10 +122,10 @@ def show_vat_declaration_export():
             '1e. Leveringen/diensten belast met 0%',
             'Totaal',
             '',
-            '5b. Voorbelasting'
+            '5b. Voorbelasting (aftrekbare BTW)'
         ],
-        'Basis': [45000, 5000, 0, 0, 0, 50000, None, None],
-        'BTW': [9450, 450, 0, 0, 0, 9900, None, 8234]
+        'Basis': [0, 0, 0, 0, 0, 0, None, None],
+        'BTW': [0, 0, 0, 0, 0, 0, None, total_vat_refund]
     }
 
     df_vat = pd.DataFrame(vat_data)
@@ -110,14 +141,16 @@ def show_vat_declaration_export():
     )
 
     # Summary
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Te betalen BTW", "€ 9,900.00")
+        st.metric("Aantal Bonnen", len(receipts))
     with col2:
-        st.metric("Voorbelasting", "€ 8,234.00")
+        st.metric("BTW 21%", f"€ {total_vat_21:,.2f}")
     with col3:
-        st.metric("Saldo", "€ 1,666.00", "Te betalen")
+        st.metric("BTW 9%", f"€ {total_vat_9:,.2f}")
+    with col4:
+        st.metric("BTW Terugvraag", f"€ {total_vat_refund:,.2f}")
 
     st.markdown("---")
 
@@ -133,32 +166,70 @@ def show_vat_declaration_export():
     with col2:
         format_option = st.selectbox(
             "Bestandsformaat",
-            ["Excel (.xlsx)", "CSV (.csv)", "PDF (.pdf)"]
+            ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)"]
         )
 
     # Export button
     if st.button("📥 Genereer BTW Aangifte Export", use_container_width=True, type="primary"):
         with st.spinner("Export wordt gegenereerd..."):
-            # Generate export (placeholder)
-            st.success(f"✅ BTW aangifte voor {quarter} {year} succesvol gegenereerd!")
+            try:
+                if format_option == "Excel (.xlsx)":
+                    export_data = ExportService.export_to_excel(
+                        receipts,
+                        include_summary=include_summary,
+                        include_vat_declaration=True
+                    )
+                    mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    file_ext = "xlsx"
+                elif format_option == "CSV (.csv)":
+                    export_data = ExportService.export_to_csv(receipts)
+                    mime_type = "text/csv"
+                    file_ext = "csv"
+                else:  # JSON
+                    export_data = ExportService.export_to_json(receipts)
+                    mime_type = "application/json"
+                    file_ext = "json"
 
-            # Provide download button
-            export_data = generate_sample_excel()
-            st.download_button(
-                label="⬇️ Download BTW Aangifte",
-                data=export_data,
-                file_name=f"BTW_Aangifte_{year}_{quarter.split()[0]}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.success(f"✅ BTW aangifte voor {quarter} {year} succesvol gegenereerd!")
+
+                # Provide download button
+                st.download_button(
+                    label="⬇️ Download BTW Aangifte",
+                    data=export_data,
+                    file_name=f"BTW_Aangifte_{year}_{quarter.split()[0]}.{file_ext}",
+                    mime=mime_type
+                )
+            except Exception as e:
+                st.error(f"Fout bij genereren export: {str(e)}")
+                logger.error(f"Export error: {e}")
 
 def show_annual_report():
     """Show annual report export."""
 
     st.subheader("📊 Jaaroverzicht")
 
-    year = st.selectbox("Selecteer jaar", [2024, 2023, 2022])
+    year = st.selectbox("Selecteer jaar", [2025, 2024, 2023, 2022])
+
+    # Get receipts for the year
+    start_dt = datetime(year, 1, 1)
+    end_dt = datetime(year, 12, 31)
+
+    receipts = get_receipts_for_export(
+        user_id=1,
+        date_from=start_dt,
+        date_to=end_dt
+    )
 
     st.markdown("---")
+
+    if not receipts:
+        st.warning(f"⚠️ Geen bonnen gevonden voor {year}")
+        return
+
+    # Calculate statistics
+    total_amount = sum(r.get('total_incl_vat', 0) for r in receipts)
+    total_vat_refund = sum(r.get('vat_refund', 0) for r in receipts)
+    avg_per_receipt = total_amount / len(receipts) if len(receipts) > 0 else 0
 
     # Annual summary
     st.markdown("### Jaarsamenvatting " + str(year))
@@ -166,27 +237,54 @@ def show_annual_report():
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Totale Uitgaven", "€ 54,321.00")
+        st.metric("Totale Uitgaven", f"€ {total_amount:,.2f}")
     with col2:
-        st.metric("BTW Terugvordering", "€ 9,876.00")
+        st.metric("BTW Terugvordering", f"€ {total_vat_refund:,.2f}")
     with col3:
-        st.metric("Aantal Bonnen", "487")
+        st.metric("Aantal Bonnen", len(receipts))
     with col4:
-        st.metric("Gem. per Bon", "€ 111.53")
+        st.metric("Gem. per Bon", f"€ {avg_per_receipt:,.2f}")
 
     # Category breakdown
     st.markdown("### Uitgaven per Categorie")
 
-    category_data = pd.DataFrame({
-        'Categorie': Config.EXPENSE_CATEGORIES,
-        'Bedrag excl. BTW': [12345, 8765, 5432, 3210, 2345, 4567, 7890],
-        'BTW': [2592, 1840, 1140, 0, 0, 958, 1657],
-        'Totaal incl. BTW': [14937, 10605, 6572, 3210, 2345, 5525, 9547],
-        'Percentage': [20.1, 14.3, 8.9, 4.3, 3.2, 7.4, 12.9]
-    })
+    # Group by category
+    category_totals = {}
+    category_vat = {}
+    category_count = {}
+
+    for receipt in receipts:
+        category = receipt.get('category', 'Onbekend')
+        amount_excl = receipt.get('amount_excl_vat', 0)
+        amount_incl = receipt.get('total_incl_vat', 0)
+        vat = amount_incl - amount_excl
+
+        if category not in category_totals:
+            category_totals[category] = 0
+            category_vat[category] = 0
+            category_count[category] = 0
+
+        category_totals[category] += amount_incl
+        category_vat[category] += vat
+        category_count[category] += 1
+
+    # Create DataFrame
+    category_data = []
+    for category in sorted(category_totals.keys()):
+        percentage = (category_totals[category] / total_amount * 100) if total_amount > 0 else 0
+        category_data.append({
+            'Categorie': category,
+            'Aantal': category_count[category],
+            'Bedrag excl. BTW': category_totals[category] - category_vat[category],
+            'BTW': category_vat[category],
+            'Totaal incl. BTW': category_totals[category],
+            'Percentage': percentage
+        })
+
+    df_category = pd.DataFrame(category_data)
 
     st.dataframe(
-        category_data.style.format({
+        df_category.style.format({
             'Bedrag excl. BTW': '€ {:,.2f}',
             'BTW': '€ {:,.2f}',
             'Totaal incl. BTW': '€ {:,.2f}',
@@ -199,15 +297,19 @@ def show_annual_report():
     # Export button
     if st.button("📥 Genereer Jaaroverzicht", use_container_width=True, type="primary"):
         with st.spinner("Jaaroverzicht wordt gegenereerd..."):
-            st.success(f"✅ Jaaroverzicht {year} succesvol gegenereerd!")
+            try:
+                export_data = ExportService.export_to_excel(receipts, include_summary=True)
+                st.success(f"✅ Jaaroverzicht {year} succesvol gegenereerd!")
 
-            export_data = generate_sample_excel()
-            st.download_button(
-                label="⬇️ Download Jaaroverzicht",
-                data=export_data,
-                file_name=f"Jaaroverzicht_{year}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                st.download_button(
+                    label="⬇️ Download Jaaroverzicht",
+                    data=export_data,
+                    file_name=f"Jaaroverzicht_{year}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.error(f"Fout bij genereren export: {str(e)}")
+                logger.error(f"Export error: {e}")
 
 def show_monthly_report():
     """Show monthly report export."""
@@ -217,17 +319,94 @@ def show_monthly_report():
     col1, col2 = st.columns(2)
 
     with col1:
-        month = st.selectbox(
-            "Maand",
-            ["Januari", "Februari", "Maart", "April", "Mei", "Juni",
-             "Juli", "Augustus", "September", "Oktober", "November", "December"]
-        )
+        month_names = ["Januari", "Februari", "Maart", "April", "Mei", "Juni",
+                      "Juli", "Augustus", "September", "Oktober", "November", "December"]
+        month = st.selectbox("Maand", month_names)
 
     with col2:
-        year = st.selectbox("Jaar", [2024, 2023])
+        year = st.selectbox("Jaar", [2025, 2024, 2023])
+
+    # Calculate date range
+    month_num = month_names.index(month) + 1
+    start_dt = datetime(year, month_num, 1)
+
+    # Get last day of month
+    if month_num == 12:
+        end_dt = datetime(year, 12, 31)
+    else:
+        end_dt = datetime(year, month_num + 1, 1) - timedelta(days=1)
+
+    # Get receipts
+    receipts = get_receipts_for_export(
+        user_id=1,
+        date_from=start_dt,
+        date_to=end_dt
+    )
+
+    st.markdown("---")
+
+    if not receipts:
+        st.warning(f"⚠️ Geen bonnen gevonden voor {month} {year}")
+        return
 
     # Generate and display monthly data
-    generate_monthly_preview(month, year)
+    st.markdown(f"### Overzicht {month} {year}")
+
+    # Calculate metrics
+    total_amount = sum(r.get('total_incl_vat', 0) for r in receipts)
+    total_vat = sum(r.get('vat_refund', 0) for r in receipts)
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Totaal Bonnen", len(receipts))
+    with col2:
+        st.metric("Totaal Bedrag", f"€ {total_amount:,.2f}")
+    with col3:
+        st.metric("BTW Terug", f"€ {total_vat:,.2f}")
+
+    # Show receipt list
+    st.markdown("### Bonnen dit Maand")
+
+    receipt_list = []
+    for r in receipts:
+        receipt_list.append({
+            'Datum': r.get('transaction_date'),
+            'Leverancier': r.get('vendor_name', 'Onbekend'),
+            'Categorie': r.get('category', 'Onbekend'),
+            'Bedrag': r.get('total_incl_vat', 0)
+        })
+
+    df_receipts = pd.DataFrame(receipt_list)
+    if not df_receipts.empty:
+        df_receipts['Datum'] = pd.to_datetime(df_receipts['Datum'])
+        df_receipts = df_receipts.sort_values('Datum')
+
+        st.dataframe(
+            df_receipts.style.format({
+                'Datum': lambda x: x.strftime('%d-%m-%Y'),
+                'Bedrag': '€ {:,.2f}'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # Export button
+        if st.button("📥 Genereer Maandrapport", use_container_width=True, type="primary"):
+            with st.spinner("Maandrapport wordt gegenereerd..."):
+                try:
+                    export_data = ExportService.export_to_excel(receipts)
+                    st.success(f"✅ Maandrapport {month} {year} succesvol gegenereerd!")
+
+                    st.download_button(
+                        label="⬇️ Download Maandrapport",
+                        data=export_data,
+                        file_name=f"Maandrapport_{month}_{year}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"Fout bij genereren export: {str(e)}")
+                    logger.error(f"Export error: {e}")
 
 def show_category_report():
     """Show category-based report."""
@@ -237,96 +416,236 @@ def show_category_report():
     selected_categories = st.multiselect(
         "Selecteer categorieën",
         Config.EXPENSE_CATEGORIES,
-        default=Config.EXPENSE_CATEGORIES[:3]
+        default=[]
     )
 
-    if selected_categories:
-        # Date range
-        col1, col2 = st.columns(2)
+    if not selected_categories:
+        st.info("ℹ️ Selecteer één of meer categorieën om het overzicht te zien")
+        return
 
-        with col1:
-            start_date = st.date_input(
-                "Van datum",
-                value=datetime.now() - timedelta(days=90),
-                format="DD/MM/YYYY"
-            )
+    # Date range
+    col1, col2 = st.columns(2)
 
-        with col2:
-            end_date = st.date_input(
-                "Tot datum",
-                value=datetime.now(),
-                format="DD/MM/YYYY"
-            )
+    with col1:
+        start_date = st.date_input(
+            "Van datum",
+            value=datetime.now() - timedelta(days=90),
+            format="DD/MM/YYYY"
+        )
 
-        # Generate preview
-        st.markdown("### Overzicht Geselecteerde Categorieën")
+    with col2:
+        end_date = st.date_input(
+            "Tot datum",
+            value=datetime.now(),
+            format="DD/MM/YYYY"
+        )
 
-        for category in selected_categories:
-            with st.expander(f"📁 {category}", expanded=True):
-                # Sample data for each category
-                transactions = pd.DataFrame({
-                    'Datum': pd.date_range(start=start_date, periods=5, freq='W'),
-                    'Leverancier': ['Vendor A', 'Vendor B', 'Vendor C', 'Vendor D', 'Vendor E'],
-                    'Bedrag excl.': [123.45, 234.56, 345.67, 456.78, 567.89],
-                    'BTW': [25.92, 49.26, 72.59, 95.92, 119.25],
-                    'Totaal': [149.37, 283.82, 418.26, 552.70, 687.14]
+    # Get receipts
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+
+    st.markdown("---")
+
+    # Generate preview
+    st.markdown("### Overzicht Geselecteerde Categorieën")
+
+    for category in selected_categories:
+        # Get receipts for this category
+        receipts = get_receipts_for_export(
+            user_id=1,
+            date_from=start_dt,
+            date_to=end_dt,
+            categories=[category]
+        )
+
+        with st.expander(f"📁 {category}", expanded=True):
+            if not receipts:
+                st.info(f"Geen bonnen gevonden voor categorie: {category}")
+                continue
+
+            # Create transactions DataFrame
+            transactions = []
+            for r in receipts:
+                transactions.append({
+                    'Datum': r.get('transaction_date'),
+                    'Leverancier': r.get('vendor_name', 'Onbekend'),
+                    'Bedrag excl.': r.get('amount_excl_vat', 0),
+                    'BTW': r.get('total_incl_vat', 0) - r.get('amount_excl_vat', 0),
+                    'Totaal': r.get('total_incl_vat', 0)
                 })
 
-                st.dataframe(
-                    transactions.style.format({
-                        'Datum': lambda x: x.strftime('%d-%m-%Y'),
-                        'Bedrag excl.': '€ {:.2f}',
-                        'BTW': '€ {:.2f}',
-                        'Totaal': '€ {:.2f}'
-                    }),
-                    use_container_width=True,
-                    hide_index=True
+            df_trans = pd.DataFrame(transactions)
+            df_trans['Datum'] = pd.to_datetime(df_trans['Datum'])
+            df_trans = df_trans.sort_values('Datum', ascending=False)
+
+            st.dataframe(
+                df_trans.style.format({
+                    'Datum': lambda x: x.strftime('%d-%m-%Y'),
+                    'Bedrag excl.': '€ {:.2f}',
+                    'BTW': '€ {:.2f}',
+                    'Totaal': '€ {:.2f}'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Totaal", f"€ {df_trans['Totaal'].sum():.2f}")
+            with col2:
+                st.metric("BTW", f"€ {df_trans['BTW'].sum():.2f}")
+            with col3:
+                st.metric("Aantal", len(df_trans))
+
+    # Export all categories
+    if st.button("📥 Exporteer Alle Categorieën", use_container_width=True, type="primary"):
+        with st.spinner("Export wordt gegenereerd..."):
+            try:
+                # Get all receipts for selected categories
+                all_receipts = get_receipts_for_export(
+                    user_id=1,
+                    date_from=start_dt,
+                    date_to=end_dt,
+                    categories=selected_categories
                 )
 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Totaal", f"€ {transactions['Totaal'].sum():.2f}")
-                with col2:
-                    st.metric("BTW", f"€ {transactions['BTW'].sum():.2f}")
-                with col3:
-                    st.metric("Aantal", len(transactions))
+                export_data = ExportService.export_to_excel(all_receipts)
+                st.success(f"✅ Export voor {len(selected_categories)} categorieën succesvol gegenereerd!")
+
+                st.download_button(
+                    label="⬇️ Download Categorie Overzicht",
+                    data=export_data,
+                    file_name=f"Categorie_Overzicht_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.error(f"Fout bij genereren export: {str(e)}")
+                logger.error(f"Export error: {e}")
 
 def show_vendor_report():
     """Show vendor-based report."""
 
     st.subheader("🏪 Leveranciers Overzicht")
 
+    # Get all receipts to extract unique vendors
+    all_receipts = get_all_receipts()
+
+    # Extract unique vendors
+    vendors = set()
+    for receipt in all_receipts:
+        extracted = receipt.get('extracted_data', {})
+        vendor = extracted.get('vendor_name')
+        if vendor:
+            vendors.add(vendor)
+
+    vendors = sorted(list(vendors))
+
+    if not vendors:
+        st.warning("⚠️ Geen leveranciers gevonden in de bonnen")
+        return
+
     # Vendor selection
     vendor_search = st.text_input("Zoek leverancier", placeholder="Typ om te zoeken...")
-
-    # Sample vendor list
-    vendors = ['Albert Heijn', 'Bol.com', 'Coolblue', 'MediaMarkt', 'HEMA', 'Kruidvat']
 
     if vendor_search:
         vendors = [v for v in vendors if vendor_search.lower() in v.lower()]
 
     selected_vendors = st.multiselect("Selecteer leveranciers", vendors)
 
-    if selected_vendors:
-        st.markdown("### Leveranciers Analyse")
+    if not selected_vendors:
+        st.info("ℹ️ Selecteer één of meer leveranciers om het overzicht te zien")
+        return
 
-        vendor_data = pd.DataFrame({
-            'Leverancier': selected_vendors,
-            'Aantal Transacties': [23, 15, 8, 12, 19],
-            'Totaal Bedrag': [2345.67, 1234.56, 3456.78, 4567.89, 1876.54],
-            'Gem. Bedrag': [101.99, 82.30, 432.10, 380.66, 98.77],
-            'Laatste Transactie': pd.date_range(end='2024-12-01', periods=5)
-        })
+    st.markdown("### Leveranciers Analyse")
+
+    # Analyze each vendor
+    vendor_data = []
+    for vendor in selected_vendors:
+        vendor_receipts = filter_receipts(vendor=vendor)
+
+        if vendor_receipts:
+            total_amount = sum(
+                r.get('extracted_data', {}).get('total_incl_vat', 0) or
+                r.get('extracted_data', {}).get('total_amount', 0)
+                for r in vendor_receipts
+            )
+
+            avg_amount = total_amount / len(vendor_receipts) if len(vendor_receipts) > 0 else 0
+
+            # Get latest transaction date
+            latest_date = None
+            for r in vendor_receipts:
+                extracted = r.get('extracted_data', {})
+                trans_date = extracted.get('transaction_date') or extracted.get('date')
+                if trans_date:
+                    if isinstance(trans_date, str):
+                        try:
+                            trans_date = datetime.fromisoformat(trans_date)
+                        except:
+                            continue
+                    if latest_date is None or trans_date > latest_date:
+                        latest_date = trans_date
+
+            vendor_data.append({
+                'Leverancier': vendor,
+                'Aantal Transacties': len(vendor_receipts),
+                'Totaal Bedrag': total_amount,
+                'Gem. Bedrag': avg_amount,
+                'Laatste Transactie': latest_date if latest_date else datetime.now()
+            })
+
+    if vendor_data:
+        df_vendor = pd.DataFrame(vendor_data)
 
         st.dataframe(
-            vendor_data.style.format({
-                'Totaal Bedrag': '€ {:.2f}',
-                'Gem. Bedrag': '€ {:.2f}',
+            df_vendor.style.format({
+                'Totaal Bedrag': '€ {:,.2f}',
+                'Gem. Bedrag': '€ {:,.2f}',
                 'Laatste Transactie': lambda x: x.strftime('%d-%m-%Y')
             }),
             use_container_width=True,
             hide_index=True
         )
+
+        # Export button
+        if st.button("📥 Exporteer Leveranciers", use_container_width=True, type="primary"):
+            with st.spinner("Export wordt gegenereerd..."):
+                try:
+                    # Get all receipts for selected vendors
+                    all_vendor_receipts = []
+                    for vendor in selected_vendors:
+                        vendor_receipts = filter_receipts(vendor=vendor)
+                        for r in vendor_receipts:
+                            extracted = r.get('extracted_data', {})
+                            if extracted:
+                                all_vendor_receipts.append({
+                                    'transaction_date': extracted.get('transaction_date') or extracted.get('date'),
+                                    'vendor_name': vendor,
+                                    'category': extracted.get('expense_category') or extracted.get('category'),
+                                    'amount_excl_vat': extracted.get('amount_excl_vat', 0),
+                                    'vat_6': extracted.get('vat_6_amount', 0),
+                                    'vat_9': extracted.get('vat_9_amount', 0),
+                                    'vat_21': extracted.get('vat_21_amount', 0),
+                                    'total_incl_vat': extracted.get('total_incl_vat') or extracted.get('total_amount', 0),
+                                    'vat_deductible_percentage': extracted.get('vat_deductible_percentage', 100),
+                                    'ib_deductible_percentage': extracted.get('ib_deductible_percentage', 100),
+                                    'vat_refund': extracted.get('vat_refund_amount', 0),
+                                    'profit_deduction': extracted.get('profit_deduction', 0),
+                                    'explanation': extracted.get('explanation') or extracted.get('notes', '')
+                                })
+
+                    export_data = ExportService.export_to_excel(all_vendor_receipts)
+                    st.success(f"✅ Export voor {len(selected_vendors)} leveranciers succesvol gegenereerd!")
+
+                    st.download_button(
+                        label="⬇️ Download Leveranciers Overzicht",
+                        data=export_data,
+                        file_name=f"Leveranciers_Overzicht_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                except Exception as e:
+                    st.error(f"Fout bij genereren export: {str(e)}")
+                    logger.error(f"Export error: {e}")
 
 def show_custom_export():
     """Show custom export options."""
@@ -380,110 +699,70 @@ def show_custom_export():
 
     format_option = st.radio(
         "Selecteer formaat",
-        ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)", "PDF (.pdf)"],
+        ["Excel (.xlsx)", "CSV (.csv)", "JSON (.json)"],
         horizontal=True
     )
 
     # Additional options
     with st.expander("Geavanceerde opties"):
-        include_deleted = st.checkbox("Inclusief verwijderde bonnen", value=False)
-        include_failed = st.checkbox("Inclusief mislukte verwerkingen", value=False)
-        group_by = st.selectbox(
-            "Groeperen op",
-            ["Geen", "Categorie", "Leverancier", "Maand"]
+        status_filter = st.multiselect(
+            "Status",
+            ["completed", "pending", "processing", "failed"],
+            default=["completed"]
+        )
+
+        selected_categories = st.multiselect(
+            "Categorieën",
+            Config.EXPENSE_CATEGORIES,
+            default=[]
         )
 
     # Export button
     if st.button("🚀 Start Custom Export", use_container_width=True, type="primary"):
         with st.spinner("Custom export wordt voorbereid..."):
-            st.success("✅ Export succesvol gegenereerd!")
+            try:
+                # Get receipts based on filters
+                start_dt = datetime.combine(start_date, datetime.min.time())
+                end_dt = datetime.combine(end_date, datetime.max.time())
 
-            # Generate sample export
-            export_data = generate_sample_excel()
-            st.download_button(
-                label="⬇️ Download Export",
-                data=export_data,
-                file_name=f"Custom_Export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                receipts = get_receipts_for_export(
+                    user_id=1,
+                    date_from=start_dt,
+                    date_to=end_dt,
+                    categories=selected_categories if selected_categories else None
+                )
 
-def generate_monthly_preview(month: str, year: int):
-    """Generate monthly report preview."""
+                # Filter by status
+                if status_filter:
+                    receipts = [r for r in receipts if any(status in str(r) for status in status_filter)]
 
-    st.markdown(f"### Overzicht {month} {year}")
+                if not receipts:
+                    st.warning("⚠️ Geen bonnen gevonden met de geselecteerde filters")
+                    return
 
-    # Sample monthly data
-    days_in_month = 30
-    daily_data = pd.DataFrame({
-        'Datum': pd.date_range(start=f'{year}-{get_month_number(month)}-01', periods=days_in_month, freq='D'),
-        'Aantal Bonnen': [2, 1, 3, 0, 2, 1, 0, 2, 3, 1] * 3,
-        'Dagelijks Totaal': [123.45, 0, 234.56, 0, 345.67, 123.45, 0, 234.56, 345.67, 456.78] * 3
-    })
+                # Generate export based on format
+                if format_option == "Excel (.xlsx)":
+                    export_data = ExportService.export_to_excel(receipts)
+                    mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    file_ext = "xlsx"
+                elif format_option == "CSV (.csv)":
+                    export_data = ExportService.export_to_csv(receipts)
+                    mime_type = "text/csv"
+                    file_ext = "csv"
+                else:  # JSON
+                    export_data = ExportService.export_to_json(receipts)
+                    mime_type = "application/json"
+                    file_ext = "json"
 
-    # Weekly aggregation
-    weekly_summary = daily_data.groupby(pd.Grouper(key='Datum', freq='W')).agg({
-        'Aantal Bonnen': 'sum',
-        'Dagelijks Totaal': 'sum'
-    }).reset_index()
+                st.success(f"✅ Export succesvol gegenereerd! ({len(receipts)} bonnen)")
 
-    st.dataframe(
-        weekly_summary.style.format({
-            'Datum': lambda x: f"Week {x.isocalendar()[1]}",
-            'Dagelijks Totaal': '€ {:.2f}'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
-
-    # Summary metrics
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric("Totaal Bonnen", daily_data['Aantal Bonnen'].sum())
-    with col2:
-        st.metric("Totaal Bedrag", f"€ {daily_data['Dagelijks Totaal'].sum():.2f}")
-    with col3:
-        avg_daily = daily_data['Dagelijks Totaal'].sum() / days_in_month
-        st.metric("Gem. per Dag", f"€ {avg_daily:.2f}")
-
-def get_month_number(month_name: str) -> str:
-    """Convert month name to number."""
-    months = {
-        'Januari': '01', 'Februari': '02', 'Maart': '03', 'April': '04',
-        'Mei': '05', 'Juni': '06', 'Juli': '07', 'Augustus': '08',
-        'September': '09', 'Oktober': '10', 'November': '11', 'December': '12'
-    }
-    return months.get(month_name, '01')
-
-def generate_sample_excel() -> bytes:
-    """Generate a sample Excel file for download."""
-    # Create sample data
-    df = pd.DataFrame({
-        'Nr': range(1, 11),
-        'Datum': pd.date_range(start='2024-01-01', periods=10, freq='W'),
-        'Leverancier': ['Vendor ' + str(i) for i in range(1, 11)],
-        'Categorie': ['Kantoorkosten'] * 10,
-        'Bedrag excl. BTW': [100 + i*10 for i in range(10)],
-        'BTW 21%': [21 + i*2.1 for i in range(10)],
-        'Totaal incl. BTW': [121 + i*12.1 for i in range(10)]
-    })
-
-    # Create Excel file in memory
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, sheet_name='Overzicht', index=False)
-
-        # Get workbook and worksheet
-        workbook = writer.book
-        worksheet = writer.sheets['Overzicht']
-
-        # Add formatting
-        money_format = workbook.add_format({'num_format': '€ #,##0.00'})
-        date_format = workbook.add_format({'num_format': 'dd-mm-yyyy'})
-
-        # Apply formatting to columns
-        worksheet.set_column('B:B', 12, date_format)
-        worksheet.set_column('E:G', 15, money_format)
-
-    output.seek(0)
-    return output.read()
+                # Generate sample export
+                st.download_button(
+                    label="⬇️ Download Export",
+                    data=export_data,
+                    file_name=f"Custom_Export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{file_ext}",
+                    mime=mime_type
+                )
+            except Exception as e:
+                st.error(f"Fout bij genereren export: {str(e)}")
+                logger.error(f"Export error: {e}")

@@ -11,8 +11,12 @@ from utils.local_storage import (
     filter_receipts,
     get_receipt,
     update_receipt_data,
-    load_metadata
+    load_metadata,
+    delete_receipt,
+    update_receipt_status
 )
+import zipfile
+import io
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +157,6 @@ def show():
             st.info("ℹ️ Geen bonnen gevonden met de huidige filters. Upload bonnen om te beginnen!")
             if st.button("📤 Ga naar Upload Bonnen", use_container_width=True, type="primary"):
                 st.session_state['selected_page'] = "Upload Bonnen"
-                st.rerun()
             return
 
         df = pd.DataFrame(receipt_data)
@@ -181,38 +184,101 @@ def show():
         # Main receipt table
         st.subheader("📋 Bonnen Overzicht")
 
+        # Display receipt table with selection first
+        selected_receipts = display_receipt_table(df)
+
         # Add action buttons above table
         col1, col2, col3, col4, col5 = st.columns(5)
 
         with col1:
-            if st.button("✏️ Bewerken", use_container_width=True):
-                st.info("Selecteer een bon in de gedetailleerde weergave hieronder om te bewerken")
+            if st.button("✏️ Bewerken", use_container_width=True, key="btn_edit"):
+                if len(selected_receipts) > 0:
+                    # Store selected IDs in session state and open detailed view
+                    st.session_state['edit_receipt_id'] = selected_receipts.iloc[0]['ID']
+                    st.session_state['show_detail_view'] = True
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Selecteer eerst één bon om te bewerken")
 
         with col2:
-            if st.button("🗑️ Verwijderen", use_container_width=True):
-                st.warning("Selecteer bonnen om te verwijderen (functie komt binnenkort)")
+            if st.button("🗑️ Verwijderen", use_container_width=True, key="btn_delete"):
+                if len(selected_receipts) > 0:
+                    st.session_state['confirm_delete'] = True
+                    st.session_state['receipts_to_delete'] = selected_receipts['ID'].tolist()
+                else:
+                    st.warning("⚠️ Selecteer bonnen om te verwijderen")
 
         with col3:
-            if st.button("✅ Goedkeuren", use_container_width=True):
-                st.success("Bulk goedkeuring komt binnenkort")
+            if st.button("✅ Goedkeuren", use_container_width=True, key="btn_approve"):
+                if len(selected_receipts) > 0:
+                    # Approve selected receipts
+                    approved_count = 0
+                    for receipt_id in selected_receipts['ID'].tolist():
+                        try:
+                            update_receipt_status(receipt_id, 'completed')
+                            approved_count += 1
+                        except Exception as e:
+                            logger.error(f"Error approving receipt {receipt_id}: {e}")
+                    st.success(f"✅ {approved_count} bon(nen) goedgekeurd!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ Selecteer bonnen om goed te keuren")
 
         with col4:
-            if st.button("📥 Downloaden", use_container_width=True):
-                st.info("Bulk download komt binnenkort")
+            if st.button("📥 Downloaden", use_container_width=True, key="btn_download"):
+                if len(selected_receipts) > 0:
+                    # Create ZIP file with selected receipts
+                    zip_buffer = create_zip_download(selected_receipts['ID'].tolist())
+                    if zip_buffer:
+                        st.download_button(
+                            label="💾 Download ZIP",
+                            data=zip_buffer,
+                            file_name=f"bonnen_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
+                else:
+                    st.warning("⚠️ Selecteer bonnen om te downloaden")
 
         with col5:
-            if st.button("💾 Exporteren", use_container_width=True):
+            if st.button("💾 Exporteren", use_container_width=True, key="btn_export"):
                 st.session_state['selected_page'] = "Export/Rapporten"
                 st.rerun()
 
-        # Display receipt table with selection
-        display_receipt_table(df)
+        # Handle delete confirmation
+        if st.session_state.get('confirm_delete', False):
+            st.warning("⚠️ Weet u zeker dat u de geselecteerde bonnen wilt verwijderen?")
+            col1, col2, col3 = st.columns([1, 1, 3])
+            with col1:
+                if st.button("✅ Ja, verwijder", type="primary", key="confirm_yes"):
+                    deleted_count = 0
+                    for receipt_id in st.session_state.get('receipts_to_delete', []):
+                        if delete_receipt(receipt_id):
+                            deleted_count += 1
+                    st.success(f"🗑️ {deleted_count} bon(nen) verwijderd!")
+                    st.session_state['confirm_delete'] = False
+                    st.session_state['receipts_to_delete'] = []
+                    st.rerun()
+            with col2:
+                if st.button("❌ Annuleren", key="confirm_no"):
+                    st.session_state['confirm_delete'] = False
+                    st.session_state['receipts_to_delete'] = []
+                    st.rerun()
 
         st.markdown("---")
 
-        # Receipt detail view
-        if st.checkbox("🔍 Gedetailleerde weergave"):
-            show_receipt_details(df)
+        # Receipt detail view - auto-open if edit button was clicked
+        show_detail = st.checkbox("🔍 Gedetailleerde weergave", value=st.session_state.get('show_detail_view', False))
+
+        if show_detail:
+            # If we have a pre-selected receipt from edit button
+            if st.session_state.get('edit_receipt_id'):
+                show_receipt_details(df, preselected_id=st.session_state.get('edit_receipt_id'))
+                # Clear the preselection
+                st.session_state['edit_receipt_id'] = None
+                st.session_state['show_detail_view'] = False
+            else:
+                show_receipt_details(df)
 
     except Exception as e:
         logger.error(f"Error loading receipts: {e}")
@@ -286,15 +352,22 @@ def display_receipt_table(df):
     if len(selected_rows) > 0:
         st.info(f"✓ {len(selected_rows)} bon(nen) geselecteerd")
 
-def show_receipt_details(df):
+    return selected_rows
+
+def show_receipt_details(df, preselected_id=None):
     """Show detailed view of selected receipt."""
 
     st.subheader("📄 Bon Details")
 
     # Select receipt to view
+    default_index = 0
+    if preselected_id and preselected_id in df['ID'].tolist():
+        default_index = df['ID'].tolist().index(preselected_id)
+
     receipt_id = st.selectbox(
         "Selecteer bon voor details:",
         df['ID'].tolist(),
+        index=default_index,
         format_func=lambda x: f"Bon #{x} - {df[df['ID'] == x]['Leverancier'].values[0]}"
     )
 
@@ -539,3 +612,36 @@ def show_receipt_details(df):
         except Exception as e:
             logger.error(f"Error loading receipt details: {e}")
             st.error(f"Fout bij laden van bon details: {str(e)}")
+
+def create_zip_download(receipt_ids: list) -> io.BytesIO:
+    """Create a ZIP file with selected receipts.
+
+    Args:
+        receipt_ids: List of receipt IDs to include
+
+    Returns:
+        BytesIO buffer containing ZIP file
+    """
+    try:
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for receipt_id in receipt_ids:
+                receipt = get_receipt(receipt_id)
+                if receipt:
+                    file_path = receipt.get('file_path')
+                    filename = receipt.get('filename')
+
+                    if file_path and Path(file_path).exists():
+                        # Add file to ZIP with original filename
+                        zip_file.write(file_path, filename)
+                    else:
+                        logger.warning(f"File not found for receipt {receipt_id}: {file_path}")
+
+        zip_buffer.seek(0)
+        return zip_buffer
+
+    except Exception as e:
+        logger.error(f"Error creating ZIP file: {e}")
+        st.error(f"Fout bij maken van ZIP bestand: {str(e)}")
+        return None

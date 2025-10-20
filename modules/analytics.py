@@ -1,19 +1,40 @@
-"""Analytics page with detailed financial insights."""
+"""Analytics page with detailed financial insights based on real receipt data."""
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import numpy as np
+from collections import defaultdict
+import logging
 
 from config import Config
+from utils.local_storage import load_metadata, filter_receipts
+
+logger = logging.getLogger(__name__)
 
 def show():
     """Display the analytics page."""
 
     st.title("📊 Analytics & Inzichten")
     st.markdown("Gedetailleerde analyse van uw administratie")
+
+    # Load receipt data
+    receipts = load_metadata()
+
+    # Check if there's any data
+    if not receipts:
+        st.info("ℹ️ Geen gegevens beschikbaar. Upload eerst bonnen om analyses te zien.")
+        if st.button("📤 Ga naar Upload Bonnen", use_container_width=True, type="primary"):
+            st.session_state['selected_page'] = "Upload Bonnen"
+        return
+
+    # Filter only completed receipts
+    completed_receipts = [r for r in receipts if r.get('processing_status') == 'completed']
+
+    if not completed_receipts:
+        st.warning("⚠️ Geen verwerkte bonnen beschikbaar voor analyse. Wacht tot bonnen zijn verwerkt.")
+        return
 
     # Date range selector
     col1, col2, col3 = st.columns([1, 1, 2])
@@ -35,38 +56,109 @@ def show():
     with col3:
         analysis_type = st.selectbox(
             "Analyse type",
-            ["Overzicht", "Trends", "Vergelijking", "Voorspelling", "BTW Analyse"]
+            ["Overzicht", "Trends", "Vergelijking", "BTW Analyse"]
         )
 
     st.markdown("---")
 
-    if analysis_type == "Overzicht":
-        show_overview_analytics()
-    elif analysis_type == "Trends":
-        show_trend_analysis()
-    elif analysis_type == "Vergelijking":
-        show_comparison_analysis()
-    elif analysis_type == "Voorspelling":
-        show_predictive_analytics()
-    elif analysis_type == "BTW Analyse":
-        show_vat_analysis()
+    # Apply date filter
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
 
-def show_overview_analytics():
-    """Show overview analytics."""
+    filtered_receipts = filter_receipts(
+        start_date=start_datetime,
+        end_date=end_datetime,
+        status='completed'
+    )
+
+    if not filtered_receipts:
+        st.info(f"ℹ️ Geen bonnen gevonden tussen {start_date.strftime('%d-%m-%Y')} en {end_date.strftime('%d-%m-%Y')}")
+        return
+
+    if analysis_type == "Overzicht":
+        show_overview_analytics(filtered_receipts)
+    elif analysis_type == "Trends":
+        show_trend_analysis(filtered_receipts)
+    elif analysis_type == "Vergelijking":
+        show_comparison_analysis(filtered_receipts)
+    elif analysis_type == "BTW Analyse":
+        show_vat_analysis(filtered_receipts)
+
+def show_overview_analytics(receipts):
+    """Show overview analytics based on real receipt data."""
 
     st.subheader("📈 Overzicht Analyse")
+
+    # Calculate real metrics
+    total_amount = 0
+    total_vat = 0
+    total_vat_deductible = 0
+    category_amounts = defaultdict(float)
+    vendor_amounts = defaultdict(float)
+    monthly_data = defaultdict(lambda: {'amount': 0, 'vat': 0, 'count': 0})
+
+    for receipt in receipts:
+        extracted = receipt.get('extracted_data', {})
+        if not extracted:
+            continue
+
+        # Get amounts
+        amount = float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0))
+        total_amount += amount
+
+        # VAT calculations
+        vat_breakdown = extracted.get('vat_breakdown', {})
+        vat_6 = float(vat_breakdown.get('6', extracted.get('vat_6_amount', 0)))
+        vat_9 = float(vat_breakdown.get('9', extracted.get('vat_9_amount', 0)))
+        vat_21 = float(vat_breakdown.get('21', extracted.get('vat_21_amount', 0)))
+        receipt_vat = vat_6 + vat_9 + vat_21
+        total_vat += receipt_vat
+
+        # VAT deductible
+        vat_deductible = float(extracted.get('vat_deductible_amount') or extracted.get('vat_refund_amount', 0))
+        if vat_deductible == 0 and receipt_vat > 0:
+            # Calculate from percentage
+            vat_deduct_pct = extracted.get('vat_deductible_percentage', 100)
+            vat_deductible = receipt_vat * (vat_deduct_pct / 100)
+        total_vat_deductible += vat_deductible
+
+        # Category breakdown
+        category = extracted.get('expense_category') or extracted.get('category', 'Niet gecategoriseerd')
+        category_amounts[category] += amount
+
+        # Vendor breakdown
+        vendor = extracted.get('vendor_name', 'Onbekend')
+        vendor_amounts[vendor] += amount
+
+        # Monthly data
+        trans_date = extracted.get('transaction_date') or extracted.get('date')
+        if trans_date:
+            if isinstance(trans_date, str):
+                try:
+                    trans_date = datetime.fromisoformat(trans_date)
+                except:
+                    trans_date = datetime.now()
+            month_key = trans_date.strftime('%Y-%m')
+            monthly_data[month_key]['amount'] += amount
+            monthly_data[month_key]['vat'] += receipt_vat
+            monthly_data[month_key]['count'] += 1
 
     # Key metrics
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Totale Uitgaven", "€ 45,678", "12% ↑")
+        avg_monthly = total_amount / max(len(monthly_data), 1)
+        st.metric("Totale Uitgaven", f"€ {total_amount:,.2f}")
+
     with col2:
-        st.metric("BTW Terugvordering", "€ 8,234", "8% ↑")
+        st.metric("BTW Terugvordering", f"€ {total_vat_deductible:,.2f}")
+
     with col3:
-        st.metric("Gem. per Maand", "€ 3,806", "5% ↓")
+        st.metric("Gem. per Maand", f"€ {avg_monthly:,.2f}")
+
     with col4:
-        st.metric("Grootste Uitgave", "€ 2,345", "MediaMarkt")
+        max_vendor = max(vendor_amounts.items(), key=lambda x: x[1]) if vendor_amounts else ('N/A', 0)
+        st.metric("Grootste Leverancier", f"€ {max_vendor[1]:,.2f}", max_vendor[0])
 
     st.markdown("---")
 
@@ -76,57 +168,77 @@ def show_overview_analytics():
     with col1:
         st.markdown("### Uitgaven per Categorie")
 
-        category_data = pd.DataFrame({
-            'Categorie': Config.EXPENSE_CATEGORIES,
-            'Bedrag': np.random.randint(1000, 8000, len(Config.EXPENSE_CATEGORIES))
-        })
+        if category_amounts:
+            category_df = pd.DataFrame([
+                {'Categorie': cat, 'Bedrag': amt}
+                for cat, amt in sorted(category_amounts.items(), key=lambda x: x[1], reverse=True)
+            ])
 
-        fig_bar = px.bar(
-            category_data,
-            x='Bedrag',
-            y='Categorie',
-            orientation='h',
-            color='Bedrag',
-            color_continuous_scale='Blues'
-        )
-        fig_bar.update_layout(height=400, showlegend=False)
-        st.plotly_chart(fig_bar, use_container_width=True)
+            fig_bar = px.bar(
+                category_df,
+                x='Bedrag',
+                y='Categorie',
+                orientation='h',
+                color='Bedrag',
+                color_continuous_scale='Blues'
+            )
+            fig_bar.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("Geen categoriegegevens beschikbaar")
 
     with col2:
         st.markdown("### Top 10 Leveranciers")
 
-        vendor_data = pd.DataFrame({
-            'Leverancier': ['Bol.com', 'Coolblue', 'MediaMarkt', 'Albert Heijn',
-                           'Amazon', 'HEMA', 'Kruidvat', 'Jumbo', 'Action', 'Praxis'],
-            'Bedrag': [5432, 4321, 3210, 2987, 2345, 1987, 1654, 1432, 1234, 987]
-        })
+        if vendor_amounts:
+            # Get top 10 vendors
+            top_vendors = sorted(vendor_amounts.items(), key=lambda x: x[1], reverse=True)[:10]
+            vendor_df = pd.DataFrame([
+                {'Leverancier': vendor, 'Bedrag': amt}
+                for vendor, amt in top_vendors
+            ])
 
-        fig_pie = px.pie(
-            vendor_data,
-            values='Bedrag',
-            names='Leverancier',
-            hole=0.4
-        )
-        fig_pie.update_layout(height=400)
-        st.plotly_chart(fig_pie, use_container_width=True)
+            fig_pie = px.pie(
+                vendor_df,
+                values='Bedrag',
+                names='Leverancier',
+                hole=0.4
+            )
+            fig_pie.update_layout(height=400)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("Geen leveranciersgegevens beschikbaar")
 
     # Monthly summary table
     st.markdown("### Maandelijks Overzicht")
 
-    monthly_data = create_monthly_summary()
-    st.dataframe(
-        monthly_data.style.format({
-            'Uitgaven': '€ {:,.2f}',
-            'BTW': '€ {:,.2f}',
-            'Netto': '€ {:,.2f}',
-            'Aantal': '{:,.0f}'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
+    if monthly_data:
+        monthly_df = pd.DataFrame([
+            {
+                'Maand': datetime.strptime(month, '%Y-%m').strftime('%B %Y'),
+                'Aantal': data['count'],
+                'Uitgaven': data['amount'],
+                'BTW': data['vat'],
+                'Netto': data['amount'] - data['vat']
+            }
+            for month, data in sorted(monthly_data.items())
+        ])
 
-def show_trend_analysis():
-    """Show trend analysis."""
+        st.dataframe(
+            monthly_df.style.format({
+                'Uitgaven': '€ {:,.2f}',
+                'BTW': '€ {:,.2f}',
+                'Netto': '€ {:,.2f}',
+                'Aantal': '{:,.0f}'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Geen maandelijkse gegevens beschikbaar")
+
+def show_trend_analysis(receipts):
+    """Show trend analysis based on real data."""
 
     st.subheader("📈 Trend Analyse")
 
@@ -142,37 +254,101 @@ def show_trend_analysis():
     with col2:
         trend_period = st.selectbox(
             "Periode",
-            ["Dagelijks", "Wekelijks", "Maandelijks", "Per Kwartaal"]
+            ["Dagelijks", "Wekelijks", "Maandelijks"]
         )
 
-    # Generate trend data
-    dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='D')
-    trend_values = np.cumsum(np.random.randn(len(dates)) * 100) + 10000
+    # Aggregate data by date
+    date_data = defaultdict(lambda: {'amount': 0, 'vat': 0, 'count': 0})
 
-    trend_df = pd.DataFrame({
-        'Datum': dates,
-        'Waarde': trend_values,
-        'Moving_Avg': pd.Series(trend_values).rolling(window=30).mean()
-    })
+    for receipt in receipts:
+        extracted = receipt.get('extracted_data', {})
+        if not extracted:
+            continue
+
+        trans_date = extracted.get('transaction_date') or extracted.get('date')
+        if not trans_date:
+            continue
+
+        if isinstance(trans_date, str):
+            try:
+                trans_date = datetime.fromisoformat(trans_date)
+            except:
+                continue
+
+        # Format date based on period
+        if trend_period == "Dagelijks":
+            date_key = trans_date.strftime('%Y-%m-%d')
+        elif trend_period == "Wekelijks":
+            date_key = trans_date.strftime('%Y-W%U')
+        else:  # Maandelijks
+            date_key = trans_date.strftime('%Y-%m')
+
+        amount = float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0))
+        vat_breakdown = extracted.get('vat_breakdown', {})
+        vat = sum(float(v) for v in vat_breakdown.values())
+
+        date_data[date_key]['amount'] += amount
+        date_data[date_key]['vat'] += vat
+        date_data[date_key]['count'] += 1
+
+    if not date_data:
+        st.info("Geen gegevens beschikbaar voor trend analyse")
+        return
+
+    # Create DataFrame
+    trend_df = pd.DataFrame([
+        {
+            'Datum': date_key,
+            'Uitgaven': data['amount'],
+            'BTW': data['vat'],
+            'Aantal': data['count'],
+            'Gemiddeld': data['amount'] / data['count'] if data['count'] > 0 else 0
+        }
+        for date_key, data in sorted(date_data.items())
+    ])
+
+    # Convert date strings to datetime for plotting
+    if trend_period == "Dagelijks":
+        trend_df['Datum_dt'] = pd.to_datetime(trend_df['Datum'])
+    elif trend_period == "Wekelijks":
+        trend_df['Datum_dt'] = pd.to_datetime(trend_df['Datum'] + '-1', format='%Y-W%U-%w')
+    else:
+        trend_df['Datum_dt'] = pd.to_datetime(trend_df['Datum'])
+
+    # Calculate moving average
+    metric_map = {
+        'Uitgaven': 'Uitgaven',
+        'BTW': 'BTW',
+        'Aantal Bonnen': 'Aantal',
+        'Gemiddeld Bedrag': 'Gemiddeld'
+    }
+    metric_col = metric_map[trend_metric]
+
+    window_size = min(7, len(trend_df))
+    if window_size > 1:
+        trend_df['Moving_Avg'] = trend_df[metric_col].rolling(window=window_size, min_periods=1).mean()
+    else:
+        trend_df['Moving_Avg'] = trend_df[metric_col]
 
     # Create trend chart
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
-        x=trend_df['Datum'],
-        y=trend_df['Waarde'],
-        mode='lines',
+        x=trend_df['Datum_dt'],
+        y=trend_df[metric_col],
+        mode='lines+markers',
         name='Werkelijk',
-        line=dict(color='#1f4788', width=1)
+        line=dict(color='#1f4788', width=2)
     ))
 
-    fig.add_trace(go.Scatter(
-        x=trend_df['Datum'],
-        y=trend_df['Moving_Avg'],
-        mode='lines',
-        name='30-dagen gemiddelde',
-        line=dict(color='#ff7f0e', width=2)
-    ))
+    if window_size > 1:
+        fig.add_trace(go.Scatter(
+            x=trend_df['Datum_dt'],
+            y=trend_df['Moving_Avg'],
+            mode='lines',
+            name=f'{window_size}-periode gemiddelde',
+            line=dict(color='#ff7f0e', width=2)
+        ))
 
     fig.update_layout(
         title=f"{trend_metric} Trend Analyse",
@@ -185,72 +361,137 @@ def show_trend_analysis():
     st.plotly_chart(fig, use_container_width=True)
 
     # Insights
-    col1, col2, col3 = st.columns(3)
+    if len(trend_df) >= 2:
+        first_value = trend_df[metric_col].iloc[0]
+        last_value = trend_df[metric_col].iloc[-1]
+        change_pct = ((last_value - first_value) / first_value * 100) if first_value > 0 else 0
 
-    with col1:
-        st.info("""
-        **📊 Trend Inzicht**
+        col1, col2, col3 = st.columns(3)
 
-        Stijgende trend van 15% over de afgelopen periode
-        """)
+        with col1:
+            trend_text = "Stijgende" if change_pct > 0 else "Dalende"
+            st.info(f"""
+            **📊 Trend Inzicht**
 
-    with col2:
-        st.warning("""
-        **⚠️ Aandachtspunt**
+            {trend_text} trend van {abs(change_pct):.1f}% over de geselecteerde periode
+            """)
 
-        Piek in uitgaven gedetecteerd in maart
-        """)
+        with col2:
+            max_value = trend_df[metric_col].max()
+            max_date = trend_df[trend_df[metric_col] == max_value]['Datum'].iloc[0]
+            st.warning(f"""
+            **📈 Hoogste Waarde**
 
-    with col3:
-        st.success("""
-        **✅ Positief**
+            € {max_value:,.2f} op {max_date}
+            """)
 
-        BTW terugvordering consistent boven verwachting
-        """)
+        with col3:
+            avg_value = trend_df[metric_col].mean()
+            st.success(f"""
+            **📊 Gemiddelde**
 
-def show_comparison_analysis():
-    """Show comparison analysis."""
+            € {avg_value:,.2f} per periode
+            """)
+
+def show_comparison_analysis(receipts):
+    """Show comparison analysis based on real data."""
 
     st.subheader("📊 Vergelijkingsanalyse")
 
     comparison_type = st.radio(
         "Vergelijk:",
-        ["Jaar-op-jaar", "Kwartaal-op-kwartaal", "Maand-op-maand"],
+        ["Maand-op-maand", "Kwartaal-op-kwartaal"],
         horizontal=True
     )
 
-    # Create comparison data
-    categories = Config.EXPENSE_CATEGORIES
-    current_period = np.random.randint(1000, 5000, len(categories))
-    previous_period = np.random.randint(1000, 5000, len(categories))
+    # Group data by time period and category
+    if comparison_type == "Maand-op-maand":
+        period_format = '%Y-%m'
+        period_name = "Maand"
+    else:  # Kwartaal-op-kwartaal
+        period_format = '%Y-Q'
+        period_name = "Kwartaal"
 
-    comparison_df = pd.DataFrame({
-        'Categorie': categories,
-        'Huidige Periode': current_period,
-        'Vorige Periode': previous_period,
-        'Verschil': current_period - previous_period,
-        'Verschil %': ((current_period - previous_period) / previous_period * 100)
-    })
+    period_category_data = defaultdict(lambda: defaultdict(float))
+
+    for receipt in receipts:
+        extracted = receipt.get('extracted_data', {})
+        if not extracted:
+            continue
+
+        trans_date = extracted.get('transaction_date') or extracted.get('date')
+        if not trans_date:
+            continue
+
+        if isinstance(trans_date, str):
+            try:
+                trans_date = datetime.fromisoformat(trans_date)
+            except:
+                continue
+
+        # Format period
+        if comparison_type == "Maand-op-maand":
+            period = trans_date.strftime(period_format)
+        else:
+            quarter = (trans_date.month - 1) // 3 + 1
+            period = f"{trans_date.year}-Q{quarter}"
+
+        category = extracted.get('expense_category') or extracted.get('category', 'Niet gecategoriseerd')
+        amount = float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0))
+
+        period_category_data[period][category] += amount
+
+    if len(period_category_data) < 2:
+        st.info(f"Niet genoeg gegevens voor {period_name.lower()}-op-{period_name.lower()} vergelijking. Minimaal 2 periodes nodig.")
+        return
+
+    # Get the two most recent periods
+    sorted_periods = sorted(period_category_data.keys())
+    current_period = sorted_periods[-1]
+    previous_period = sorted_periods[-2]
+
+    # Get all categories
+    all_categories = set()
+    all_categories.update(period_category_data[current_period].keys())
+    all_categories.update(period_category_data[previous_period].keys())
+
+    # Create comparison DataFrame
+    comparison_data = []
+    for category in sorted(all_categories):
+        current = period_category_data[current_period].get(category, 0)
+        previous = period_category_data[previous_period].get(category, 0)
+        diff = current - previous
+        diff_pct = (diff / previous * 100) if previous > 0 else 0
+
+        comparison_data.append({
+            'Categorie': category,
+            'Vorige Periode': previous,
+            'Huidige Periode': current,
+            'Verschil': diff,
+            'Verschil %': diff_pct
+        })
+
+    comparison_df = pd.DataFrame(comparison_data)
 
     # Grouped bar chart
     fig = go.Figure()
 
     fig.add_trace(go.Bar(
-        name='Vorige Periode',
-        x=categories,
-        y=previous_period,
+        name=f'{period_name}: {previous_period}',
+        x=comparison_df['Categorie'],
+        y=comparison_df['Vorige Periode'],
         marker_color='lightgray'
     ))
 
     fig.add_trace(go.Bar(
-        name='Huidige Periode',
-        x=categories,
-        y=current_period,
+        name=f'{period_name}: {current_period}',
+        x=comparison_df['Categorie'],
+        y=comparison_df['Huidige Periode'],
         marker_color='#1f4788'
     ))
 
     fig.update_layout(
-        title="Vergelijking per Categorie",
+        title=f"Vergelijking per Categorie ({previous_period} vs {current_period})",
         xaxis_title="Categorie",
         yaxis_title="Bedrag (€)",
         barmode='group',
@@ -268,132 +509,64 @@ def show_comparison_analysis():
             'Vorige Periode': '€ {:,.2f}',
             'Verschil': '€ {:,.2f}',
             'Verschil %': '{:.1f}%'
-        }).applymap(
-            lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else 'color: red',
+        }).map(
+            lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else ('color: red' if isinstance(x, (int, float)) and x < 0 else ''),
             subset=['Verschil', 'Verschil %']
         ),
         use_container_width=True,
         hide_index=True
     )
 
-def show_predictive_analytics():
-    """Show predictive analytics."""
-
-    st.subheader("🔮 Voorspellende Analyse")
-
-    st.info("""
-    **Machine Learning Voorspellingen**
-
-    Op basis van historische gegevens voorspellen we toekomstige uitgaven en BTW terugvorderingen.
-    """)
-
-    # Forecast settings
-    col1, col2 = st.columns(2)
-
-    with col1:
-        forecast_months = st.slider(
-            "Voorspel aantal maanden",
-            min_value=1,
-            max_value=12,
-            value=3
-        )
-
-    with col2:
-        confidence_level = st.select_slider(
-            "Betrouwbaarheidsniveau",
-            options=["Laag", "Gemiddeld", "Hoog"],
-            value="Gemiddeld"
-        )
-
-    # Generate forecast data
-    historical_dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='M')
-    historical_values = np.random.randint(3000, 6000, len(historical_dates))
-
-    forecast_dates = pd.date_range(start='2025-01-01', periods=forecast_months, freq='M')
-    forecast_values = np.random.randint(3500, 5500, len(forecast_dates))
-    upper_bound = forecast_values + np.random.randint(500, 1000, len(forecast_dates))
-    lower_bound = forecast_values - np.random.randint(500, 1000, len(forecast_dates))
-
-    # Create forecast chart
-    fig = go.Figure()
-
-    # Historical data
-    fig.add_trace(go.Scatter(
-        x=historical_dates,
-        y=historical_values,
-        mode='lines+markers',
-        name='Historisch',
-        line=dict(color='#1f4788', width=2)
-    ))
-
-    # Forecast
-    fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=forecast_values,
-        mode='lines+markers',
-        name='Voorspelling',
-        line=dict(color='#ff7f0e', width=2, dash='dash')
-    ))
-
-    # Confidence interval
-    fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=upper_bound,
-        fill=None,
-        mode='lines',
-        line_color='rgba(0,100,80,0)',
-        showlegend=False
-    ))
-
-    fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=lower_bound,
-        fill='tonexty',
-        mode='lines',
-        line_color='rgba(0,100,80,0)',
-        name='Betrouwbaarheidsinterval'
-    ))
-
-    fig.update_layout(
-        title="Uitgaven Voorspelling",
-        xaxis_title="Maand",
-        yaxis_title="Bedrag (€)",
-        height=500,
-        hovermode='x unified'
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Predictions summary
-    st.markdown("### Voorspelde Waarden")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            "Verwachte Uitgaven (3 maanden)",
-            f"€ {sum(forecast_values):,.2f}",
-            f"± € {np.mean(upper_bound - forecast_values):,.2f}"
-        )
-
-    with col2:
-        st.metric(
-            "Verwachte BTW Terug",
-            f"€ {sum(forecast_values) * 0.17:,.2f}",
-            "Gebaseerd op 17% gemiddeld"
-        )
-
-    with col3:
-        st.metric(
-            "Betrouwbaarheid",
-            "82%",
-            "Gebaseerd op 12 maanden data"
-        )
-
-def show_vat_analysis():
-    """Show VAT analysis."""
+def show_vat_analysis(receipts):
+    """Show VAT analysis based on real data."""
 
     st.subheader("💶 BTW Analyse")
+
+    # Calculate VAT data
+    vat_rate_totals = {'6': 0, '9': 0, '21': 0, '0': 0}
+    monthly_vat_deductible = defaultdict(float)
+    category_vat_data = defaultdict(lambda: {'total': 0, 'vat_paid': 0, 'vat_deductible': 0, 'btw_pct': 0, 'ib_pct': 0, 'count': 0})
+
+    for receipt in receipts:
+        extracted = receipt.get('extracted_data', {})
+        if not extracted:
+            continue
+
+        # VAT rate breakdown
+        vat_breakdown = extracted.get('vat_breakdown', {})
+        for rate, amount in vat_breakdown.items():
+            vat_rate_totals[str(rate)] += float(amount)
+
+        # Check for zero-rated
+        total_vat = sum(float(v) for v in vat_breakdown.values())
+        total_amount = float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0))
+        if total_vat == 0 and total_amount > 0:
+            vat_rate_totals['0'] += total_amount
+
+        # Monthly VAT deductible
+        trans_date = extracted.get('transaction_date') or extracted.get('date')
+        if trans_date:
+            if isinstance(trans_date, str):
+                try:
+                    trans_date = datetime.fromisoformat(trans_date)
+                except:
+                    trans_date = datetime.now()
+            month_key = trans_date.strftime('%Y-%m')
+
+            vat_deductible = float(extracted.get('vat_deductible_amount') or extracted.get('vat_refund_amount', 0))
+            if vat_deductible == 0 and total_vat > 0:
+                vat_deduct_pct = extracted.get('vat_deductible_percentage', 100)
+                vat_deductible = total_vat * (vat_deduct_pct / 100)
+            monthly_vat_deductible[month_key] += vat_deductible
+
+        # Category VAT data
+        category = extracted.get('expense_category') or extracted.get('category', 'Niet gecategoriseerd')
+        category_vat_data[category]['total'] += total_amount
+        category_vat_data[category]['vat_paid'] += total_vat
+        category_vat_data[category]['vat_deductible'] += vat_deductible
+        category_vat_data[category]['btw_pct'] = extracted.get('vat_deductible_percentage', 100)
+        category_vat_data[category]['ib_pct'] = extracted.get('ib_deductible_percentage', 100)
+        category_vat_data[category]['count'] += 1
 
     # VAT rate breakdown
     col1, col2 = st.columns(2)
@@ -401,99 +574,108 @@ def show_vat_analysis():
     with col1:
         st.markdown("### BTW Tarieven Verdeling")
 
-        vat_data = pd.DataFrame({
-            'Tarief': ['6% (oud)', '9%', '21%', 'Vrijgesteld'],
-            'Bedrag': [1234, 2345, 8765, 432]
-        })
+        vat_data = pd.DataFrame([
+            {'Tarief': '0% (vrijgesteld)', 'Bedrag': vat_rate_totals['0']},
+            {'Tarief': '6% (oud)', 'Bedrag': vat_rate_totals['6']},
+            {'Tarief': '9%', 'Bedrag': vat_rate_totals['9']},
+            {'Tarief': '21%', 'Bedrag': vat_rate_totals['21']}
+        ])
 
-        fig_donut = px.pie(
-            vat_data,
-            values='Bedrag',
-            names='Tarief',
-            hole=0.5,
-            color_discrete_sequence=['#e8f4f8', '#b3d9e8', '#5ca3c4', '#1f4788']
-        )
-        fig_donut.update_layout(height=350)
-        st.plotly_chart(fig_donut, use_container_width=True)
+        # Filter out zero amounts
+        vat_data = vat_data[vat_data['Bedrag'] > 0]
+
+        if not vat_data.empty:
+            fig_donut = px.pie(
+                vat_data,
+                values='Bedrag',
+                names='Tarief',
+                hole=0.5,
+                color_discrete_sequence=['#e8f4f8', '#b3d9e8', '#5ca3c4', '#1f4788']
+            )
+            fig_donut.update_layout(height=350)
+            st.plotly_chart(fig_donut, use_container_width=True)
+        else:
+            st.info("Geen BTW gegevens beschikbaar")
 
     with col2:
         st.markdown("### BTW Terugvordering per Maand")
 
-        months = ['Jan', 'Feb', 'Mrt', 'Apr', 'Mei', 'Jun',
-                 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec']
-        vat_refund = np.random.randint(500, 1500, 12)
+        if monthly_vat_deductible:
+            monthly_df = pd.DataFrame([
+                {'Maand': month, 'BTW Terug': amount}
+                for month, amount in sorted(monthly_vat_deductible.items())
+            ])
 
-        fig_line = go.Figure()
-        fig_line.add_trace(go.Scatter(
-            x=months,
-            y=vat_refund,
-            mode='lines+markers',
-            fill='tozeroy',
-            line=dict(color='#1f4788', width=2)
-        ))
-        fig_line.update_layout(
-            height=350,
-            xaxis_title="Maand",
-            yaxis_title="BTW Terugvordering (€)"
-        )
-        st.plotly_chart(fig_line, use_container_width=True)
+            # Convert month to readable format
+            monthly_df['Maand_dt'] = pd.to_datetime(monthly_df['Maand'])
+            monthly_df['Maand_label'] = monthly_df['Maand_dt'].dt.strftime('%b %Y')
+
+            fig_line = go.Figure()
+            fig_line.add_trace(go.Scatter(
+                x=monthly_df['Maand_dt'],
+                y=monthly_df['BTW Terug'],
+                mode='lines+markers',
+                fill='tozeroy',
+                line=dict(color='#1f4788', width=2)
+            ))
+            fig_line.update_layout(
+                height=350,
+                xaxis_title="Maand",
+                yaxis_title="BTW Terugvordering (€)"
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+        else:
+            st.info("Geen maandelijkse BTW gegevens beschikbaar")
 
     # Deductibility analysis
-    st.markdown("### Aftrekbaarheid Analyse")
+    st.markdown("### Aftrekbaarheid Analyse per Categorie")
 
-    deductibility_data = pd.DataFrame({
-        'Categorie': Config.EXPENSE_CATEGORIES,
-        'BTW Aftrekbaar (%)': [100, 100, 73.5, 0, 0, 100, 100],
-        'IB Aftrekbaar (%)': [100, 100, 73.5, 80, 80, 100, 100],
-        'Totaal Bedrag': np.random.randint(1000, 5000, len(Config.EXPENSE_CATEGORIES))
-    })
+    if category_vat_data:
+        deductibility_df = pd.DataFrame([
+            {
+                'Categorie': category,
+                'BTW Aftrekbaar (%)': data['btw_pct'],
+                'IB Aftrekbaar (%)': data['ib_pct'],
+                'Totaal Bedrag': data['total'],
+                'BTW Betaald': data['vat_paid'],
+                'BTW Terug': data['vat_deductible']
+            }
+            for category, data in sorted(category_vat_data.items())
+        ])
 
-    deductibility_data['BTW Terug'] = (
-        deductibility_data['Totaal Bedrag'] * 0.21 *
-        deductibility_data['BTW Aftrekbaar (%)'] / 100
-    )
-
-    st.dataframe(
-        deductibility_data.style.format({
-            'BTW Aftrekbaar (%)': '{:.1f}%',
-            'IB Aftrekbaar (%)': '{:.1f}%',
-            'Totaal Bedrag': '€ {:,.2f}',
-            'BTW Terug': '€ {:,.2f}'
-        }),
-        use_container_width=True,
-        hide_index=True
-    )
+        st.dataframe(
+            deductibility_df.style.format({
+                'BTW Aftrekbaar (%)': '{:.0f}%',
+                'IB Aftrekbaar (%)': '{:.0f}%',
+                'Totaal Bedrag': '€ {:,.2f}',
+                'BTW Betaald': '€ {:,.2f}',
+                'BTW Terug': '€ {:,.2f}'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Geen aftrekbaarheidsgegevens beschikbaar")
 
     # Summary metrics
     st.markdown("### Samenvatting")
 
+    total_vat_paid = sum(vat_rate_totals.values())
+    total_vat_deductible = sum(monthly_vat_deductible.values())
+    total_receipts_amount = sum(data['total'] for data in category_vat_data.values())
+    effective_vat_pct = (total_vat_paid / total_receipts_amount * 100) if total_receipts_amount > 0 else 0
+
     col1, col2, col3, col4 = st.columns(4)
 
-    total_vat = deductibility_data['BTW Terug'].sum()
-
     with col1:
-        st.metric("Totaal BTW Betaald", f"€ {total_vat * 1.2:,.2f}")
+        st.metric("Totaal BTW Betaald", f"€ {total_vat_paid:,.2f}")
 
     with col2:
-        st.metric("BTW Aftrekbaar", f"€ {total_vat:,.2f}")
+        st.metric("BTW Aftrekbaar", f"€ {total_vat_deductible:,.2f}")
 
     with col3:
-        st.metric("Effectief BTW %", "17.3%")
+        st.metric("Effectief BTW %", f"{effective_vat_pct:.1f}%")
 
     with col4:
-        st.metric("Besparing", f"€ {total_vat * 0.8:,.2f}")
-
-def create_monthly_summary():
-    """Create monthly summary data."""
-
-    months = pd.date_range(start='2024-01-01', end='2024-12-31', freq='M')
-
-    data = {
-        'Maand': months.strftime('%B %Y'),
-        'Aantal': np.random.randint(20, 50, len(months)),
-        'Uitgaven': np.random.randint(2000, 6000, len(months)),
-        'BTW': np.random.randint(300, 900, len(months)),
-        'Netto': np.random.randint(1700, 5100, len(months))
-    }
-
-    return pd.DataFrame(data)
+        saving = total_vat_deductible
+        st.metric("Besparing", f"€ {saving:,.2f}")

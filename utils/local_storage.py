@@ -302,11 +302,83 @@ def load_metadata() -> List[Dict]:
 def save_metadata(metadata: List[Dict]):
     """Save receipts metadata to JSON file."""
     try:
+        # Clean duplicates before saving
+        metadata = cleanup_duplicates(metadata)
+
         with open(METADATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"Error saving metadata: {e}")
         raise
+
+def cleanup_duplicates(metadata: List[Dict]) -> List[Dict]:
+    """
+    Remove duplicate receipts, keeping only the latest completed version.
+
+    Strategy:
+    1. Group receipts by filename
+    2. For each group, keep only the latest completed one
+    3. If no completed version exists, keep the latest one
+
+    Args:
+        metadata: List of receipt dictionaries
+
+    Returns:
+        Cleaned list with only unique receipts
+    """
+    from collections import defaultdict
+
+    # Group receipts by filename
+    grouped = defaultdict(list)
+    for receipt in metadata:
+        filename = receipt.get('filename', '')
+        grouped[filename].append(receipt)
+
+    # Keep only the best version of each receipt
+    unique_receipts = []
+    for filename, receipts in grouped.items():
+        # Sort by: 1) completed status first, 2) then by ID (latest)
+        # Completed receipts with higher IDs are preferred
+        sorted_receipts = sorted(
+            receipts,
+            key=lambda r: (
+                r.get('processing_status') == 'completed',  # Completed first
+                r.get('id', 0)  # Then by ID (latest)
+            ),
+            reverse=True
+        )
+
+        # Take the best one (completed with highest ID, or just highest ID)
+        best_receipt = sorted_receipts[0]
+        unique_receipts.append(best_receipt)
+
+        # Log if we removed duplicates
+        if len(receipts) > 1:
+            removed_ids = [r['id'] for r in receipts if r['id'] != best_receipt['id']]
+            logger.info(f"Removed duplicate receipts for '{filename}': IDs {removed_ids}, kept ID {best_receipt['id']}")
+
+    # Sort by ID for consistent ordering
+    unique_receipts.sort(key=lambda r: r.get('id', 0))
+
+    return unique_receipts
+
+def cleanup_metadata_file():
+    """
+    Manually clean up the receipts_metadata.json file to remove duplicates.
+    This can be called to clean existing data.
+    """
+    try:
+        metadata = load_metadata()
+        cleaned = cleanup_duplicates(metadata)
+
+        with open(METADATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cleaned, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"Cleaned metadata file: {len(metadata)} -> {len(cleaned)} receipts")
+        return True
+    except Exception as e:
+        logger.error(f"Error cleaning metadata file: {e}")
+        return False
 
 def export_to_json(output_path: str) -> bool:
     """Export all receipts to a JSON file.

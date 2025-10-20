@@ -8,7 +8,7 @@ import io
 from pathlib import Path
 
 from config import Config
-from utils.database_utils import get_receipts_for_export
+from utils.database_utils_local import get_receipts_for_export
 from utils.calculations import calculate_quarterly_vat, calculate_annual_summary
 
 logger = logging.getLogger(__name__)

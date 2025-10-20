@@ -15,6 +15,7 @@ from config import Config
 from services.processing_pipeline import ReceiptProcessor
 from utils.file_utils import validate_file, save_uploaded_file
 from utils.database_utils_local import save_receipt_to_db
+from utils.local_storage import save_receipt as save_to_json, update_receipt_data
 
 logger = logging.getLogger(__name__)
 
@@ -248,6 +249,12 @@ def process_uploads(
             result = processor.process_receipt(receipt_id, str(file_path))
 
             if result['success']:
+                # Save to receipts_metadata.json in receipt_data/receipts/
+                try:
+                    update_receipt_data(receipt_id, result.get('data', {}))
+                except Exception as e:
+                    logger.error(f"Failed to save receipt to JSON: {e}")
+
                 results.append({
                     'file': file.name,
                     'status': 'Succesvol',
@@ -329,6 +336,12 @@ def process_zip_file(uploaded_zip, zip_ref, valid_files):
                 result = processor.process_receipt(receipt_id, str(file_path))
 
                 if result['success']:
+                    # Save to receipts_metadata.json in receipt_data/receipts/
+                    try:
+                        update_receipt_data(receipt_id, result.get('data', {}))
+                    except Exception as e:
+                        logger.error(f"Failed to save receipt to JSON: {e}")
+
                     results.append({
                         'file': file_name,
                         'status': 'Succesvol',
@@ -456,10 +469,9 @@ def display_processing_results(results, successful, failed, total_files, contain
         col1, col2 = st.columns(2)
 
         with col1:
-            if st.button("📋 Naar Bonnen Beheer", use_container_width=True):
+            if st.button("📋 Naar Bonnen Beheer", use_container_width=True, key="nav_to_bonnen_beheer"):
                 st.session_state['selected_page'] = "Bonnen Beheer"
-                st.rerun()
 
         with col2:
-            if st.button("🆕 Meer Uploaden", use_container_width=True):
+            if st.button("🆕 Meer Uploaden", use_container_width=True, key="upload_more"):
                 st.rerun()

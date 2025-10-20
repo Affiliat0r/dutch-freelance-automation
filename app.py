@@ -199,11 +199,15 @@ def main():
             "Instellingen"
         ]
 
-        # Check if navigation was triggered from a button
+        # Initialize current page in session state
+        if 'current_page' not in st.session_state:
+            st.session_state['current_page'] = "Dashboard"
+
+        # Check if button triggered navigation (from upload page)
         if 'selected_page' in st.session_state:
-            default_index = menu_options.index(st.session_state['selected_page']) if st.session_state['selected_page'] in menu_options else 0
-        else:
-            default_index = 0
+            st.session_state['current_page'] = st.session_state['selected_page']
+            del st.session_state['selected_page']
+            st.rerun()
 
         selected = option_menu(
             menu_title="Navigatie",
@@ -217,7 +221,7 @@ def main():
                 "gear"
             ],
             menu_icon="list",
-            default_index=default_index,
+            default_index=menu_options.index(st.session_state['current_page']),
             styles={
                 "container": {"padding": "5!important", "background-color": "#fafafa"},
                 "icon": {"color": "#1f4788", "font-size": "20px"},
@@ -231,8 +235,8 @@ def main():
             }
         )
 
-        # Update session state with current selection
-        st.session_state['selected_page'] = selected
+        # Update current page based on menu selection
+        st.session_state['current_page'] = selected
 
         # Footer info
         st.markdown("---")

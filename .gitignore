@@ -185,3 +185,13 @@ docs/.doctrees/
 # Streamlit
 .streamlit/secrets.toml
 .streamlit/credentials.toml
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# User receipt data (keep structure, ignore actual receipts)
+receipt_data/receipts/*.jpg
+receipt_data/receipts/*.jpeg
+receipt_data/receipts/*.png
+receipt_data/receipts/*.pdf
+receipt_data/receipts_metadata.json

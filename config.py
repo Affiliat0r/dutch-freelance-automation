@@ -21,6 +21,9 @@ class Config:
     BASE_DIR: Path = Path(__file__).parent
     UPLOAD_FOLDER: Path = BASE_DIR / os.getenv("UPLOAD_FOLDER", "uploads")
     TEMP_FOLDER: Path = BASE_DIR / "temp"
+    INVOICE_DATA_DIR: Path = BASE_DIR / "invoice_data"
+    INVOICE_PDF_DIR: Path = INVOICE_DATA_DIR / "invoices"
+    INVOICE_LOGO_DIR: Path = INVOICE_DATA_DIR / "logos"
 
     # File upload settings
     MAX_UPLOAD_SIZE_MB: int = int(os.getenv("MAX_UPLOAD_SIZE_MB", "10"))
@@ -84,6 +87,19 @@ class Config:
         "Toelichting/motivatie"
     ]
 
+    # Invoice settings
+    INVOICE_NUMBER_FORMAT = "{prefix}-{year}-{number:04d}"  # INV-2025-0001
+    DEFAULT_PAYMENT_TERMS = 30  # days
+    INVOICE_VAT_RATES = [0, 9, 21]  # Valid VAT rates
+    INVOICE_STATUS_OPTIONS = ["draft", "sent", "paid", "cancelled"]
+    PAYMENT_STATUS_OPTIONS = ["unpaid", "paid", "overdue", "cancelled"]
+    PAYMENT_METHODS = ["Bankoverschrijving", "iDEAL", "Contant", "Creditcard", "PayPal"]
+
+    # PDF settings
+    INVOICE_PDF_FONT = "Helvetica"
+    INVOICE_LOGO_MAX_WIDTH = 200  # pixels
+    INVOICE_LOGO_MAX_HEIGHT = 100  # pixels
+
     @classmethod
     def create_directories(cls):
         """Create necessary directories if they don't exist."""
@@ -94,6 +110,11 @@ class Config:
         (cls.UPLOAD_FOLDER / "receipts").mkdir(exist_ok=True)
         (cls.UPLOAD_FOLDER / "processed").mkdir(exist_ok=True)
         (cls.UPLOAD_FOLDER / "failed").mkdir(exist_ok=True)
+
+        # Create invoice directories
+        cls.INVOICE_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        cls.INVOICE_PDF_DIR.mkdir(parents=True, exist_ok=True)
+        cls.INVOICE_LOGO_DIR.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def validate(cls):

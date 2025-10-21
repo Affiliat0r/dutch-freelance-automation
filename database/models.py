@@ -32,7 +32,9 @@ class User(Base):
 
     # Relationships
     receipts = relationship("Receipt", back_populates="user", cascade="all, delete-orphan")
+    invoices = relationship("Invoice", back_populates="user", cascade="all, delete-orphan")
     settings = relationship("UserSettings", back_populates="user", uselist=False)
+    invoice_settings = relationship("InvoiceSettings", back_populates="user", uselist=False)
 
 class UserSettings(Base):
     """User-specific settings and preferences."""
@@ -184,3 +186,171 @@ class ExportHistory(Base):
     export_timestamp = Column(DateTime, default=datetime.utcnow)
     status = Column(String(50))  # success, failed
     error_message = Column(Text)
+
+class Invoice(Base):
+    """Invoice model for income tracking."""
+
+    __tablename__ = "invoices"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # Invoice identification
+    invoice_number = Column(String(50), unique=True, index=True, nullable=False)
+    invoice_date = Column(DateTime, nullable=False, index=True)
+    due_date = Column(DateTime, nullable=False)
+
+    # Client information
+    client_name = Column(String(255), nullable=False, index=True)
+    client_company = Column(String(255))
+    client_email = Column(String(255))
+    client_address = Column(Text)
+    client_postal_code = Column(String(20))
+    client_city = Column(String(100))
+    client_country = Column(String(100), default="Nederland")
+    client_kvk = Column(String(20))
+    client_btw = Column(String(20))
+
+    # Financial data
+    subtotal_excl_vat = Column(Numeric(12, 2), nullable=False)
+    vat_rate = Column(Float, default=21.0)  # 0, 9, or 21
+    vat_amount = Column(Numeric(12, 2), nullable=False)
+    total_incl_vat = Column(Numeric(12, 2), nullable=False)
+
+    # Payment
+    payment_status = Column(String(50), default="unpaid")  # unpaid, paid, overdue, cancelled
+    payment_date = Column(DateTime, nullable=True)
+    payment_method = Column(String(50))  # bank_transfer, cash, ideal, etc.
+    payment_reference = Column(String(255))
+
+    # Additional info
+    notes = Column(Text)
+    reference = Column(String(255))  # Client reference/PO number
+    currency = Column(String(3), default="EUR")
+
+    # Status
+    status = Column(String(50), default="draft")  # draft, sent, paid, cancelled
+    sent_date = Column(DateTime)
+    pdf_path = Column(String(500))  # Path to generated PDF
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", back_populates="invoices")
+    line_items = relationship("InvoiceLineItem", back_populates="invoice", cascade="all, delete-orphan", order_by="InvoiceLineItem.line_order")
+
+class InvoiceLineItem(Base):
+    """Line items for invoices."""
+
+    __tablename__ = "invoice_line_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    invoice_id = Column(Integer, ForeignKey("invoices.id"), nullable=False)
+
+    # Line item details
+    description = Column(Text, nullable=False)
+    quantity = Column(Numeric(10, 2), nullable=False, default=1.0)
+    unit_price = Column(Numeric(12, 2), nullable=False)
+    vat_rate = Column(Float, nullable=False)  # Can vary per line item
+
+    # Calculated fields
+    subtotal = Column(Numeric(12, 2), nullable=False)  # quantity * unit_price
+    vat_amount = Column(Numeric(12, 2), nullable=False)
+    total = Column(Numeric(12, 2), nullable=False)
+
+    # Order
+    line_order = Column(Integer, default=0)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    invoice = relationship("Invoice", back_populates="line_items")
+
+class InvoiceSettings(Base):
+    """Invoice-specific settings per user."""
+
+    __tablename__ = "invoice_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True)
+
+    # Company details for invoices (duplicate from User for flexibility)
+    company_name = Column(String(255))
+    kvk_number = Column(String(20))
+    btw_number = Column(String(20))
+    iban = Column(String(34))
+    bic = Column(String(11))
+
+    # Address
+    address_street = Column(String(255))
+    address_postal_code = Column(String(20))
+    address_city = Column(String(100))
+    address_country = Column(String(100), default="Nederland")
+
+    # Contact
+    phone = Column(String(20))
+    email = Column(String(255))
+    website = Column(String(255))
+
+    # Invoice defaults
+    default_vat_rate = Column(Float, default=21.0)
+    default_payment_terms = Column(Integer, default=30)  # days
+    invoice_number_prefix = Column(String(20), default="INV")
+    invoice_number_start = Column(Integer, default=1)
+    next_invoice_number = Column(Integer, default=1)
+
+    # Logo
+    logo_path = Column(String(500))
+
+    # Footer text
+    footer_text = Column(Text)
+
+    # Email template
+    email_subject = Column(String(255), default="Factuur {invoice_number}")
+    email_body = Column(Text, default="Beste {client_name},\n\nBijgevoegd vindt u factuur {invoice_number}.\n\nMet vriendelijke groet,\n{company_name}")
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", back_populates="invoice_settings")
+
+class Client(Base):
+    """Client model for invoice management."""
+
+    __tablename__ = "clients"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+
+    # Client details
+    name = Column(String(255), nullable=False, index=True)
+    company_name = Column(String(255))
+    email = Column(String(255))
+    phone = Column(String(20))
+
+    # Address
+    address_street = Column(String(255))
+    address_postal_code = Column(String(20))
+    address_city = Column(String(100))
+    address_country = Column(String(100), default="Nederland")
+
+    # Tax details
+    kvk_number = Column(String(20))
+    btw_number = Column(String(20))
+
+    # Preferences
+    default_payment_terms = Column(Integer, default=30)
+    default_vat_rate = Column(Float, default=21.0)
+
+    # Status
+    is_active = Column(Boolean, default=True)
+    notes = Column(Text)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

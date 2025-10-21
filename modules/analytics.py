@@ -10,6 +10,7 @@ import logging
 
 from config import Config
 from utils.local_storage import load_metadata, filter_receipts
+from utils.invoice_storage import filter_invoices, get_invoice_statistics
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ def show():
     with col3:
         analysis_type = st.selectbox(
             "Analyse type",
-            ["Overzicht", "Trends", "Vergelijking", "BTW Analyse"]
+            ["Overzicht", "Omzet Analyse", "Winst & Verlies", "Trends", "Vergelijking", "BTW Analyse"]
         )
 
     st.markdown("---")
@@ -77,6 +78,10 @@ def show():
 
     if analysis_type == "Overzicht":
         show_overview_analytics(filtered_receipts)
+    elif analysis_type == "Omzet Analyse":
+        show_revenue_analytics(start_datetime, end_datetime)
+    elif analysis_type == "Winst & Verlies":
+        show_profit_loss_analysis(filtered_receipts, start_datetime, end_datetime)
     elif analysis_type == "Trends":
         show_trend_analysis(filtered_receipts)
     elif analysis_type == "Vergelijking":
@@ -679,3 +684,413 @@ def show_vat_analysis(receipts):
     with col4:
         saving = total_vat_deductible
         st.metric("Besparing", f"€ {saving:,.2f}")
+
+def show_revenue_analytics(start_date, end_date):
+    """Show revenue analytics from invoices."""
+
+    st.subheader("💰 Omzet Analyse")
+
+    # Get invoice data
+    invoices = filter_invoices(start_date=start_date, end_date=end_date)
+
+    if not invoices:
+        st.info("ℹ️ Geen facturen gevonden in de geselecteerde periode.")
+        if st.button("📝 Ga naar Facturen", use_container_width=True, type="primary"):
+            st.session_state['selected_page'] = "Facturen"
+            st.rerun()
+        return
+
+    # Calculate metrics
+    total_revenue = 0
+    total_vat_payable = 0
+    total_paid = 0
+    total_unpaid = 0
+    total_overdue = 0
+    client_revenue = defaultdict(float)
+    monthly_revenue = defaultdict(lambda: {'revenue': 0, 'vat': 0, 'count': 0, 'paid': 0, 'unpaid': 0})
+
+    for invoice in invoices:
+        total_incl_vat = invoice.get('total_incl_vat', 0)
+        vat_amount = invoice.get('vat_amount', 0)
+        payment_status = invoice.get('payment_status', 'unpaid')
+        client_name = invoice.get('client_name', 'Onbekend')
+
+        total_revenue += total_incl_vat
+        total_vat_payable += vat_amount
+
+        if payment_status == 'paid':
+            total_paid += total_incl_vat
+        else:
+            total_unpaid += total_incl_vat
+            if payment_status == 'overdue':
+                total_overdue += total_incl_vat
+
+        client_revenue[client_name] += total_incl_vat
+
+        # Monthly data
+        invoice_date = invoice.get('invoice_date')
+        if invoice_date:
+            if isinstance(invoice_date, str):
+                try:
+                    invoice_date = datetime.fromisoformat(invoice_date)
+                except:
+                    invoice_date = datetime.now()
+            month_key = invoice_date.strftime('%Y-%m')
+            monthly_revenue[month_key]['revenue'] += total_incl_vat
+            monthly_revenue[month_key]['vat'] += vat_amount
+            monthly_revenue[month_key]['count'] += 1
+            if payment_status == 'paid':
+                monthly_revenue[month_key]['paid'] += total_incl_vat
+            else:
+                monthly_revenue[month_key]['unpaid'] += total_incl_vat
+
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Totale Omzet", f"€ {total_revenue:,.2f}", f"{len(invoices)} facturen")
+
+    with col2:
+        st.metric("BTW Te Betalen", f"€ {total_vat_payable:,.2f}")
+
+    with col3:
+        st.metric("Betaald", f"€ {total_paid:,.2f}", delta="Ontvangen")
+
+    with col4:
+        st.metric("Openstaand", f"€ {total_unpaid:,.2f}", delta=f"€ {total_overdue:,.2f} achterstallig" if total_overdue > 0 else None, delta_color="inverse" if total_overdue > 0 else "off")
+
+    st.markdown("---")
+
+    # Charts
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Omzet per Klant")
+
+        if client_revenue:
+            # Get top 10 clients
+            top_clients = sorted(client_revenue.items(), key=lambda x: x[1], reverse=True)[:10]
+            client_df = pd.DataFrame([
+                {'Klant': client, 'Omzet': revenue}
+                for client, revenue in top_clients
+            ])
+
+            fig_bar = px.bar(
+                client_df,
+                x='Omzet',
+                y='Klant',
+                orientation='h',
+                color='Omzet',
+                color_continuous_scale='Greens'
+            )
+            fig_bar.update_layout(height=400, showlegend=False)
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("Geen klantgegevens beschikbaar")
+
+    with col2:
+        st.markdown("### Betalingsstatus Verdeling")
+
+        payment_data = pd.DataFrame([
+            {'Status': 'Betaald', 'Bedrag': total_paid},
+            {'Status': 'Openstaand', 'Bedrag': total_unpaid - total_overdue},
+            {'Status': 'Achterstallig', 'Bedrag': total_overdue}
+        ])
+
+        payment_data = payment_data[payment_data['Bedrag'] > 0]
+
+        if not payment_data.empty:
+            fig_pie = px.pie(
+                payment_data,
+                values='Bedrag',
+                names='Status',
+                color='Status',
+                color_discrete_map={
+                    'Betaald': '#2ecc71',
+                    'Openstaand': '#f39c12',
+                    'Achterstallig': '#e74c3c'
+                }
+            )
+            fig_pie.update_layout(height=400)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("Geen betalingsgegevens beschikbaar")
+
+    # Monthly revenue chart
+    st.markdown("### Maandelijkse Omzet Trend")
+
+    if monthly_revenue:
+        monthly_df = pd.DataFrame([
+            {
+                'Maand': datetime.strptime(month, '%Y-%m'),
+                'Omzet': data['revenue'],
+                'BTW': data['vat'],
+                'Betaald': data['paid'],
+                'Openstaand': data['unpaid']
+            }
+            for month, data in sorted(monthly_revenue.items())
+        ])
+
+        fig = go.Figure()
+
+        fig.add_trace(go.Bar(
+            name='Betaald',
+            x=monthly_df['Maand'],
+            y=monthly_df['Betaald'],
+            marker_color='#2ecc71'
+        ))
+
+        fig.add_trace(go.Bar(
+            name='Openstaand',
+            x=monthly_df['Maand'],
+            y=monthly_df['Openstaand'],
+            marker_color='#f39c12'
+        ))
+
+        fig.update_layout(
+            height=400,
+            xaxis_title="Maand",
+            yaxis_title="Omzet (€)",
+            barmode='stack',
+            hovermode='x unified'
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Monthly summary table
+        st.markdown("### Maandelijks Overzicht")
+
+        summary_df = pd.DataFrame([
+            {
+                'Maand': month.strftime('%B %Y'),
+                'Aantal Facturen': data['count'],
+                'Totale Omzet': data['revenue'],
+                'BTW': data['vat'],
+                'Betaald': data['paid'],
+                'Openstaand': data['unpaid']
+            }
+            for month, data in [(datetime.strptime(m, '%Y-%m'), d) for m, d in sorted(monthly_revenue.items())]
+        ])
+
+        st.dataframe(
+            summary_df.style.format({
+                'Totale Omzet': '€ {:,.2f}',
+                'BTW': '€ {:,.2f}',
+                'Betaald': '€ {:,.2f}',
+                'Openstaand': '€ {:,.2f}',
+                'Aantal Facturen': '{:,.0f}'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("Geen maandelijkse gegevens beschikbaar")
+
+def show_profit_loss_analysis(receipts, start_date, end_date):
+    """Show profit and loss analysis combining income and expenses."""
+
+    st.subheader("📊 Winst & Verlies Analyse")
+
+    # Get both receipts and invoices
+    invoices = filter_invoices(start_date=start_date, end_date=end_date)
+
+    # Calculate expenses
+    total_expenses = 0
+    total_vat_refund = 0
+    expenses_excl_vat = 0
+
+    for receipt in receipts:
+        extracted = receipt.get('extracted_data', {})
+        if not extracted:
+            continue
+
+        amount = float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0))
+        total_expenses += amount
+
+        vat_deductible = float(extracted.get('vat_deductible_amount') or extracted.get('vat_refund_amount', 0))
+        total_vat_refund += vat_deductible
+
+        amount_excl = float(extracted.get('amount_excl_vat', 0))
+        if amount_excl == 0:
+            # Calculate if not present
+            vat_breakdown = extracted.get('vat_breakdown', {})
+            total_vat = sum(float(v) for v in vat_breakdown.values())
+            amount_excl = amount - total_vat
+        expenses_excl_vat += amount_excl
+
+    # Calculate revenue
+    total_revenue = 0
+    total_vat_payable = 0
+    revenue_excl_vat = 0
+
+    for invoice in invoices:
+        total_incl_vat = invoice.get('total_incl_vat', 0)
+        vat_amount = invoice.get('vat_amount', 0)
+        subtotal = invoice.get('subtotal_excl_vat', 0)
+
+        total_revenue += total_incl_vat
+        total_vat_payable += vat_amount
+        revenue_excl_vat += subtotal
+
+    # Calculate profit
+    gross_profit = total_revenue - total_expenses
+    net_vat_position = total_vat_payable - total_vat_refund
+    profit_excl_vat = revenue_excl_vat - expenses_excl_vat
+
+    # Key metrics
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Totale Omzet", f"€ {total_revenue:,.2f}", f"{len(invoices)} facturen")
+
+    with col2:
+        st.metric("Totale Kosten", f"€ {total_expenses:,.2f}", f"{len(receipts)} bonnen")
+
+    with col3:
+        profit_color = "normal" if gross_profit >= 0 else "inverse"
+        st.metric("Bruto Resultaat", f"€ {gross_profit:,.2f}", "Winst" if gross_profit >= 0 else "Verlies", delta_color=profit_color)
+
+    with col4:
+        margin = (gross_profit / total_revenue * 100) if total_revenue > 0 else 0
+        st.metric("Winstmarge", f"{margin:.1f}%")
+
+    st.markdown("---")
+
+    # P&L Statement
+    st.markdown("### Resultatenrekening")
+
+    pl_data = [
+        {"Categorie": "Omzet", "Subcategorie": "Totale omzet (incl. BTW)", "Bedrag": total_revenue},
+        {"Categorie": "Omzet", "Subcategorie": "BTW op omzet", "Bedrag": -total_vat_payable},
+        {"Categorie": "Omzet", "Subcategorie": "Omzet (excl. BTW)", "Bedrag": revenue_excl_vat},
+        {"Categorie": "", "Subcategorie": "", "Bedrag": None},
+        {"Categorie": "Kosten", "Subcategorie": "Totale kosten (incl. BTW)", "Bedrag": -total_expenses},
+        {"Categorie": "Kosten", "Subcategorie": "BTW terugvordering", "Bedrag": total_vat_refund},
+        {"Categorie": "Kosten", "Subcategorie": "Kosten (excl. BTW)", "Bedrag": -expenses_excl_vat},
+        {"Categorie": "", "Subcategorie": "", "Bedrag": None},
+        {"Categorie": "BTW", "Subcategorie": "BTW te betalen", "Bedrag": -total_vat_payable},
+        {"Categorie": "BTW", "Subcategorie": "BTW terugvordering", "Bedrag": total_vat_refund},
+        {"Categorie": "BTW", "Subcategorie": "Netto BTW positie", "Bedrag": -net_vat_position},
+        {"Categorie": "", "Subcategorie": "", "Bedrag": None},
+        {"Categorie": "Resultaat", "Subcategorie": "Bruto resultaat (incl. BTW)", "Bedrag": gross_profit},
+        {"Categorie": "Resultaat", "Subcategorie": "Resultaat (excl. BTW)", "Bedrag": profit_excl_vat},
+    ]
+
+    pl_df = pd.DataFrame(pl_data)
+
+    # Format and style
+    def highlight_pl(row):
+        if row['Categorie'] == 'Resultaat':
+            return ['background-color: #d4edda; font-weight: bold'] * len(row)
+        elif row['Categorie'] in ['Omzet', 'BTW']:
+            return ['background-color: #e8f4f8'] * len(row)
+        elif row['Categorie'] == 'Kosten':
+            return ['background-color: #fff3cd'] * len(row)
+        elif pd.isna(row['Bedrag']):
+            return ['border-top: 2px solid #dee2e6'] * len(row)
+        return [''] * len(row)
+
+    styled_pl = pl_df.style.format({
+        'Bedrag': lambda x: f"€ {x:,.2f}" if pd.notna(x) else ""
+    }).apply(highlight_pl, axis=1)
+
+    st.dataframe(styled_pl, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # Visual comparison
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("### Omzet vs Kosten")
+
+        comparison_data = pd.DataFrame([
+            {'Categorie': 'Omzet (excl. BTW)', 'Bedrag': revenue_excl_vat},
+            {'Categorie': 'Kosten (excl. BTW)', 'Bedrag': expenses_excl_vat},
+            {'Categorie': 'Resultaat', 'Bedrag': profit_excl_vat}
+        ])
+
+        fig = px.bar(
+            comparison_data,
+            x='Categorie',
+            y='Bedrag',
+            color='Categorie',
+            color_discrete_map={
+                'Omzet (excl. BTW)': '#2ecc71',
+                'Kosten (excl. BTW)': '#e74c3c',
+                'Resultaat': '#3498db'
+            }
+        )
+        fig.update_layout(height=400, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.markdown("### BTW Positie")
+
+        vat_data = pd.DataFrame([
+            {'Categorie': 'BTW Te Betalen', 'Bedrag': total_vat_payable},
+            {'Categorie': 'BTW Terugvordering', 'Bedrag': total_vat_refund},
+            {'Categorie': 'Netto BTW', 'Bedrag': abs(net_vat_position)}
+        ])
+
+        fig = px.bar(
+            vat_data,
+            x='Categorie',
+            y='Bedrag',
+            color='Categorie',
+            color_discrete_map={
+                'BTW Te Betalen': '#e74c3c',
+                'BTW Terugvordering': '#2ecc71',
+                'Netto BTW': '#f39c12'
+            }
+        )
+        fig.update_layout(height=400, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Summary insights
+    st.markdown("### Inzichten")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if total_revenue > 0:
+            expense_ratio = (total_expenses / total_revenue * 100)
+            st.info(f"""
+            **💡 Kostenratio**
+
+            Kosten zijn {expense_ratio:.1f}% van de omzet
+            """)
+
+    with col2:
+        if gross_profit >= 0:
+            st.success(f"""
+            **✅ Positief Resultaat**
+
+            Winst van € {gross_profit:,.2f}
+            """)
+        else:
+            st.error(f"""
+            **⚠️ Negatief Resultaat**
+
+            Verlies van € {abs(gross_profit):,.2f}
+            """)
+
+    with col3:
+        if net_vat_position > 0:
+            st.warning(f"""
+            **💶 BTW Te Betalen**
+
+            € {net_vat_position:,.2f} aan Belastingdienst
+            """)
+        elif net_vat_position < 0:
+            st.success(f"""
+            **💶 BTW Terug te Vorderen**
+
+            € {abs(net_vat_position):,.2f} van Belastingdienst
+            """)
+        else:
+            st.info("""
+            **💶 BTW Neutraal**
+
+            Geen netto BTW positie
+            """)

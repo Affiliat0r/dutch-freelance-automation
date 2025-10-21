@@ -56,6 +56,41 @@ The app will be available at `http://localhost:8501`
 
 **Current modules primarily use local storage.** When adding features, check which storage system the module uses before implementing.
 
+### Invoice System (Omzet/Income Side)
+
+The application now includes a complete invoice system for tracking revenue alongside expense tracking:
+
+**Storage** ([utils/invoice_storage.py](utils/invoice_storage.py)):
+- JSON-based storage in `invoice_data/invoices_metadata.json`
+- Invoice PDFs stored in `invoice_data/invoices/`
+- Client data in `invoice_data/clients.json`
+- Settings in `invoice_data/settings.json`
+- Functions: `save_invoice()`, `get_next_invoice_number()`, `filter_invoices()`, `get_invoice_statistics()`
+
+**Invoice Services**:
+1. **Invoice Service** ([services/invoice_service.py](services/invoice_service.py))
+   - `calculate_line_item_totals()`: Calculate subtotal, VAT, total per line
+   - `calculate_invoice_totals()`: Sum all items, break down VAT by rate (0%, 9%, 21%)
+   - `validate_invoice_data()`: Validate required fields, amounts, VAT rates
+   - `create_invoice_from_form()`: Convert UI form data to invoice structure
+
+2. **PDF Generator** ([services/pdf_generator.py](services/pdf_generator.py))
+   - `generate_invoice_pdf()`: Create professional Dutch-compliant PDF invoices
+   - Includes: company logo, client info, line items table, VAT breakdown, payment terms
+   - Uses ReportLab library
+
+**Invoice Module** ([modules/invoices.py](modules/invoices.py)):
+- **New Invoice Tab**: Multi-line item editor with real-time calculations
+- **Overview Tab**: List all invoices with filtering
+- **Unpaid Tab**: Track unpaid and overdue invoices
+- **Clients Tab**: Manage client information
+
+**Integration Points**:
+- Dashboard now shows both income and expense metrics
+- Analytics includes revenue analysis and profit/loss reports
+- Export/Reports includes P&L and revenue reports
+- Settings has dedicated Invoice Settings tab
+
 ### Four-Step Gemini Processing Pipeline
 
 The application uses a **Gemini-only processing pipeline** ([services/processing_pipeline.py](services/processing_pipeline.py)):
@@ -87,23 +122,28 @@ The application uses a **Gemini-only processing pipeline** ([services/processing
 app.py                          # Main entry point, navigation, page routing
 config.py                       # Centralized configuration management
 ├── database/
-│   ├── models.py               # SQLAlchemy models (User, Receipt, ExtractedData, AuditLog)
+│   ├── models.py               # SQLAlchemy models (User, Receipt, ExtractedData, Invoice, InvoiceSettings, etc.)
 │   └── connection.py           # Database session management, init_db(), drop_db()
 ├── modules/                    # Streamlit page modules (NOT "pages/")
-│   ├── dashboard.py            # Main dashboard with KPIs
+│   ├── dashboard.py            # Main dashboard with KPIs (income + expenses)
 │   ├── upload_receipts.py      # Batch upload interface
 │   ├── receipt_management.py   # Review/edit extracted data
-│   ├── analytics.py            # Charts and trend analysis
-│   ├── export_reports.py       # Excel/CSV/JSON export
-│   └── settings.py             # User preferences
+│   ├── invoices.py             # Invoice builder and management (NEW)
+│   ├── analytics.py            # Charts and trend analysis (includes revenue & P&L)
+│   ├── export_reports.py       # Excel/CSV/JSON export (includes P&L & revenue reports)
+│   └── settings.py             # User preferences (includes invoice settings tab)
 ├── services/
 │   ├── llm_service.py          # 4-step Gemini processing pipeline
 │   ├── processing_pipeline.py  # Orchestrates receipt processing flow
+│   ├── invoice_service.py      # Invoice calculations and validation (NEW)
+│   ├── pdf_generator.py        # Invoice PDF generation with ReportLab (NEW)
 │   ├── export_service.py       # Export functionality
 │   └── ocr_service.py          # Legacy Tesseract OCR (not actively used)
 └── utils/
     ├── session_state.py        # Streamlit session management
     ├── database_utils.py       # Database CRUD operations
+    ├── local_storage.py        # Receipt local JSON storage
+    ├── invoice_storage.py      # Invoice local JSON storage (NEW)
     ├── file_utils.py           # File handling, validation
     ├── calculations.py         # Tax calculation helpers
     └── auth.py                 # Authentication (currently disabled)
@@ -111,6 +151,7 @@ config.py                       # Centralized configuration management
 
 ### Data Flow
 
+**Expense (Kosten) Side:**
 1. User uploads receipt(s) via [modules/upload_receipts.py](modules/upload_receipts.py)
 2. Receipt saved to **local storage** ([utils/local_storage.py](utils/local_storage.py)) with status="pending"
 3. [services/processing_pipeline.py](services/processing_pipeline.py) orchestrates processing:
@@ -120,6 +161,19 @@ config.py                       # Centralized configuration management
    - Updates receipt status to "completed" or "failed"
 4. User reviews/edits in [modules/receipt_management.py](modules/receipt_management.py)
 5. User exports data in [modules/export_reports.py](modules/export_reports.py)
+
+**Income (Omzet) Side:**
+1. User creates invoice via [modules/invoices.py](modules/invoices.py) New Invoice tab
+2. Invoice data validated by [services/invoice_service.py](services/invoice_service.py)
+3. Invoice saved to **local storage** ([utils/invoice_storage.py](utils/invoice_storage.py))
+4. PDF generated via [services/pdf_generator.py](services/pdf_generator.py) if requested
+5. User manages invoices in Overview/Unpaid tabs
+6. User exports revenue reports in [modules/export_reports.py](modules/export_reports.py)
+
+**Combined Analysis:**
+- Dashboard combines income and expense metrics for profit calculation
+- Analytics provides P&L reports merging both datasets
+- Export/Reports generates comprehensive financial reports
 
 ## Dutch Tax Categories & Rules
 

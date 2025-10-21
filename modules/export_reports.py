@@ -11,6 +11,7 @@ from config import Config
 from services.export_service import ExportService
 from utils.local_storage import filter_receipts, get_all_receipts, get_statistics
 from utils.database_utils_local import get_receipts_for_export
+from utils.invoice_storage import filter_invoices, get_invoice_statistics
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ def show():
         "Selecteer export type",
         [
             "BTW Aangifte (Kwartaal)",
+            "Winst & Verlies Rapport",
+            "Omzet Overzicht",
             "Jaaroverzicht",
             "Maandrapport",
             "Categorie Overzicht",
@@ -46,6 +49,10 @@ def show():
 
     if export_type == "BTW Aangifte (Kwartaal)":
         show_vat_declaration_export()
+    elif export_type == "Winst & Verlies Rapport":
+        show_profit_loss_report()
+    elif export_type == "Omzet Overzicht":
+        show_revenue_report()
     elif export_type == "Jaaroverzicht":
         show_annual_report()
     elif export_type == "Maandrapport":
@@ -97,35 +104,91 @@ def show_vat_declaration_export():
         date_to=end_dt
     )
 
+    # Get invoices for this quarter
+    invoices = filter_invoices(start_date=start_dt, end_date=end_dt)
+
     st.markdown("---")
 
-    if not receipts:
-        st.warning(f"⚠️ Geen bonnen gevonden voor {quarter} {year}")
+    if not receipts and not invoices:
+        st.warning(f"⚠️ Geen gegevens gevonden voor {quarter} {year}")
         return
 
-    # Calculate VAT totals
-    total_vat_6 = sum(r.get('vat_6', 0) for r in receipts)
-    total_vat_9 = sum(r.get('vat_9', 0) for r in receipts)
-    total_vat_21 = sum(r.get('vat_21', 0) for r in receipts)
+    # Calculate VAT totals from expenses (receipts)
+    expense_vat_6 = sum(r.get('vat_6', 0) for r in receipts)
+    expense_vat_9 = sum(r.get('vat_9', 0) for r in receipts)
+    expense_vat_21 = sum(r.get('vat_21', 0) for r in receipts)
     total_vat_refund = sum(r.get('vat_refund', 0) for r in receipts)
+
+    # Calculate VAT totals from revenue (invoices)
+    revenue_basis_21 = 0
+    revenue_basis_9 = 0
+    revenue_basis_0 = 0
+    revenue_vat_21 = 0
+    revenue_vat_9 = 0
+    revenue_vat_0 = 0
+
+    for invoice in invoices:
+        # Get line items to calculate VAT breakdown
+        line_items = invoice.get('line_items', [])
+        for item in line_items:
+            vat_rate = item.get('vat_rate', 21)
+            subtotal = item.get('subtotal', 0)
+            vat_amount = item.get('vat_amount', 0)
+
+            if vat_rate == 21:
+                revenue_basis_21 += subtotal
+                revenue_vat_21 += vat_amount
+            elif vat_rate == 9:
+                revenue_basis_9 += subtotal
+                revenue_vat_9 += vat_amount
+            else:  # 0%
+                revenue_basis_0 += subtotal
+                revenue_vat_0 += vat_amount
+
+    # Calculate total VAT payable
+    total_vat_payable = revenue_vat_21 + revenue_vat_9 + revenue_vat_0
 
     # Preview section
     st.markdown("### Voorvertoning BTW Overzicht")
 
-    # Real VAT data
+    # Real VAT data following Dutch BTW aangifte format
     vat_data = {
         'Omschrijving': [
-            '1a. Leveringen/diensten belast met hoog tarief',
-            '1b. Leveringen/diensten belast met laag tarief',
+            '1a. Leveringen/diensten belast met hoog tarief (21%)',
+            '1b. Leveringen/diensten belast met laag tarief (9%)',
             '1c. Leveringen/diensten belast met overige tarieven',
             '1d. Privégebruik',
             '1e. Leveringen/diensten belast met 0%',
-            'Totaal',
+            'Subtotaal verschuldigde BTW',
             '',
-            '5b. Voorbelasting (aftrekbare BTW)'
+            '5b. Voorbelasting (aftrekbare BTW)',
+            '',
+            'Te betalen/terug te vorderen'
         ],
-        'Basis': [0, 0, 0, 0, 0, 0, None, None],
-        'BTW': [0, 0, 0, 0, 0, 0, None, total_vat_refund]
+        'Basis': [
+            revenue_basis_21,
+            revenue_basis_9,
+            0,
+            0,
+            revenue_basis_0,
+            None,
+            None,
+            None,
+            None,
+            None
+        ],
+        'BTW': [
+            revenue_vat_21,
+            revenue_vat_9,
+            0,
+            0,
+            0,
+            total_vat_payable,
+            None,
+            total_vat_refund,
+            None,
+            total_vat_payable - total_vat_refund
+        ]
     }
 
     df_vat = pd.DataFrame(vat_data)
@@ -144,13 +207,21 @@ def show_vat_declaration_export():
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Aantal Bonnen", len(receipts))
+        st.metric("Aantal Facturen", len(invoices))
+        st.caption(f"{len(receipts)} bonnen")
+
     with col2:
-        st.metric("BTW 21%", f"€ {total_vat_21:,.2f}")
+        st.metric("BTW Verschuldigd", f"€ {total_vat_payable:,.2f}")
+        st.caption(f"Omzet BTW")
+
     with col3:
-        st.metric("BTW 9%", f"€ {total_vat_9:,.2f}")
-    with col4:
         st.metric("BTW Terugvraag", f"€ {total_vat_refund:,.2f}")
+        st.caption(f"Kosten BTW")
+
+    with col4:
+        net_btw = total_vat_payable - total_vat_refund
+        st.metric("Netto BTW", f"€ {net_btw:,.2f}")
+        st.caption("Te betalen" if net_btw > 0 else "Terug te vorderen")
 
     st.markdown("---")
 
@@ -766,3 +837,282 @@ def show_custom_export():
             except Exception as e:
                 st.error(f"Fout bij genereren export: {str(e)}")
                 logger.error(f"Export error: {e}")
+
+def show_profit_loss_report():
+    """Show profit and loss report combining income and expenses."""
+
+    st.subheader("📊 Winst & Verlies Rapport")
+    st.info("Genereer een compleet winst & verlies overzicht met omzet en kosten.")
+
+    # Date range selection
+    col1, col2 = st.columns(2)
+
+    with col1:
+        start_date = st.date_input(
+            "Van datum",
+            value=datetime.now().replace(month=1, day=1),
+            format="DD/MM/YYYY"
+        )
+
+    with col2:
+        end_date = st.date_input(
+            "Tot datum",
+            value=datetime.now(),
+            format="DD/MM/YYYY"
+        )
+
+    # Convert to datetime
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+
+    # Get data
+    receipts = filter_receipts(start_date=start_dt, end_date=end_dt, status='completed')
+    invoices = filter_invoices(start_date=start_dt, end_date=end_dt)
+
+    if not receipts and not invoices:
+        st.warning("⚠️ Geen gegevens gevonden voor de geselecteerde periode.")
+        return
+
+    st.markdown("---")
+
+    # Calculate totals
+    total_expenses = 0
+    total_vat_refund = 0
+    expenses_excl_vat = 0
+
+    for receipt in receipts:
+        extracted = receipt.get('extracted_data', {})
+        if extracted:
+            amount = float(extracted.get('total_incl_vat') or extracted.get('total_amount', 0))
+            total_expenses += amount
+
+            vat_deductible = float(extracted.get('vat_deductible_amount') or extracted.get('vat_refund_amount', 0))
+            total_vat_refund += vat_deductible
+
+            amount_excl = float(extracted.get('amount_excl_vat', 0))
+            if amount_excl == 0:
+                vat_breakdown = extracted.get('vat_breakdown', {})
+                total_vat = sum(float(v) for v in vat_breakdown.values())
+                amount_excl = amount - total_vat
+            expenses_excl_vat += amount_excl
+
+    total_revenue = 0
+    total_vat_payable = 0
+    revenue_excl_vat = 0
+
+    for invoice in invoices:
+        total_incl_vat = invoice.get('total_incl_vat', 0)
+        vat_amount = invoice.get('vat_amount', 0)
+        subtotal = invoice.get('subtotal_excl_vat', 0)
+
+        total_revenue += total_incl_vat
+        total_vat_payable += vat_amount
+        revenue_excl_vat += subtotal
+
+    gross_profit = total_revenue - total_expenses
+    net_vat_position = total_vat_payable - total_vat_refund
+    profit_excl_vat = revenue_excl_vat - expenses_excl_vat
+
+    # Preview
+    st.markdown("### Voorvertoning")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Omzet", f"€ {total_revenue:,.2f}")
+
+    with col2:
+        st.metric("Kosten", f"€ {total_expenses:,.2f}")
+
+    with col3:
+        profit_color = "normal" if gross_profit >= 0 else "inverse"
+        st.metric("Resultaat", f"€ {gross_profit:,.2f}", delta_color=profit_color)
+
+    with col4:
+        margin = (gross_profit / total_revenue * 100) if total_revenue > 0 else 0
+        st.metric("Marge", f"{margin:.1f}%")
+
+    # Create P&L DataFrame
+    pl_data = [
+        {"Categorie": "Omzet", "Subcategorie": "Totale omzet (incl. BTW)", "Bedrag": total_revenue},
+        {"Categorie": "Omzet", "Subcategorie": "BTW op omzet", "Bedrag": -total_vat_payable},
+        {"Categorie": "Omzet", "Subcategorie": "Omzet (excl. BTW)", "Bedrag": revenue_excl_vat},
+        {"Categorie": "", "Subcategorie": "", "Bedrag": None},
+        {"Categorie": "Kosten", "Subcategorie": "Totale kosten (incl. BTW)", "Bedrag": -total_expenses},
+        {"Categorie": "Kosten", "Subcategorie": "BTW terugvordering", "Bedrag": total_vat_refund},
+        {"Categorie": "Kosten", "Subcategorie": "Kosten (excl. BTW)", "Bedrag": -expenses_excl_vat},
+        {"Categorie": "", "Subcategorie": "", "Bedrag": None},
+        {"Categorie": "BTW", "Subcategorie": "BTW te betalen", "Bedrag": -total_vat_payable},
+        {"Categorie": "BTW", "Subcategorie": "BTW terugvordering", "Bedrag": total_vat_refund},
+        {"Categorie": "BTW", "Subcategorie": "Netto BTW positie", "Bedrag": -net_vat_position},
+        {"Categorie": "", "Subcategorie": "", "Bedrag": None},
+        {"Categorie": "Resultaat", "Subcategorie": "Bruto resultaat (incl. BTW)", "Bedrag": gross_profit},
+        {"Categorie": "Resultaat", "Subcategorie": "Resultaat (excl. BTW)", "Bedrag": profit_excl_vat},
+    ]
+
+    df = pd.DataFrame(pl_data)
+
+    st.dataframe(
+        df.style.format({
+            'Bedrag': lambda x: f"€ {x:,.2f}" if pd.notna(x) else ""
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # Export buttons
+    st.markdown("---")
+    st.markdown("### Download Opties")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Excel export
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Winst & Verlies', index=False)
+
+        st.download_button(
+            label="📥 Download Excel",
+            data=output.getvalue(),
+            file_name=f"Winst_Verlies_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    with col2:
+        # CSV export
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv_data,
+            file_name=f"Winst_Verlies_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+    with col3:
+        # PDF export placeholder
+        st.button("📄 Download PDF", disabled=True, use_container_width=True, help="PDF export komt binnenkort")
+
+def show_revenue_report():
+    """Show revenue report from invoices."""
+
+    st.subheader("💰 Omzet Overzicht")
+    st.info("Genereer een overzicht van alle facturen en omzet.")
+
+    # Date range selection
+    col1, col2 = st.columns(2)
+
+    with col1:
+        start_date = st.date_input(
+            "Van datum",
+            value=datetime.now().replace(month=1, day=1),
+            format="DD/MM/YYYY",
+            key="revenue_start_date"
+        )
+
+    with col2:
+        end_date = st.date_input(
+            "Tot datum",
+            value=datetime.now(),
+            format="DD/MM/YYYY",
+            key="revenue_end_date"
+        )
+
+    # Convert to datetime
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+
+    # Get invoices
+    invoices = filter_invoices(start_date=start_dt, end_date=end_dt)
+
+    if not invoices:
+        st.warning("⚠️ Geen facturen gevonden voor de geselecteerde periode.")
+        return
+
+    st.markdown("---")
+
+    # Calculate totals
+    total_revenue = sum(inv.get('total_incl_vat', 0) for inv in invoices)
+    total_vat = sum(inv.get('vat_amount', 0) for inv in invoices)
+    total_paid = sum(inv.get('total_incl_vat', 0) for inv in invoices if inv.get('payment_status') == 'paid')
+    total_unpaid = sum(inv.get('total_incl_vat', 0) for inv in invoices if inv.get('payment_status') != 'paid')
+
+    # Preview
+    st.markdown("### Voorvertoning")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Aantal Facturen", len(invoices))
+
+    with col2:
+        st.metric("Totale Omzet", f"€ {total_revenue:,.2f}")
+
+    with col3:
+        st.metric("Betaald", f"€ {total_paid:,.2f}")
+
+    with col4:
+        st.metric("Openstaand", f"€ {total_unpaid:,.2f}")
+
+    # Create DataFrame
+    invoice_data = []
+    for inv in invoices:
+        invoice_data.append({
+            'Factuurnummer': inv.get('invoice_number', ''),
+            'Datum': inv.get('invoice_date', ''),
+            'Klant': inv.get('client_name', ''),
+            'Bedrag excl. BTW': inv.get('subtotal_excl_vat', 0),
+            'BTW': inv.get('vat_amount', 0),
+            'Totaal incl. BTW': inv.get('total_incl_vat', 0),
+            'Status': inv.get('payment_status', 'unpaid'),
+            'Betalingstermijn': inv.get('payment_terms', 30)
+        })
+
+    df = pd.DataFrame(invoice_data)
+
+    st.dataframe(
+        df.style.format({
+            'Bedrag excl. BTW': '€ {:,.2f}',
+            'BTW': '€ {:,.2f}',
+            'Totaal incl. BTW': '€ {:,.2f}'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    # Export buttons
+    st.markdown("---")
+    st.markdown("### Download Opties")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        # Excel export
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Omzet', index=False)
+
+        st.download_button(
+            label="📥 Download Excel",
+            data=output.getvalue(),
+            file_name=f"Omzet_Overzicht_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
+        )
+
+    with col2:
+        # CSV export
+        csv_data = df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download CSV",
+            data=csv_data,
+            file_name=f"Omzet_Overzicht_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+    with col3:
+        # PDF export placeholder
+        st.button("📄 Download PDF", disabled=True, use_container_width=True, help="PDF export komt binnenkort")

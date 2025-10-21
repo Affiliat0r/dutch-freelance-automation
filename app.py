@@ -17,6 +17,7 @@ from modules import (
     dashboard,
     upload_receipts,
     receipt_management,
+    invoices,
     analytics,
     export_reports,
     settings
@@ -194,6 +195,7 @@ def main():
             "Dashboard",
             "Upload Bonnen",
             "Bonnen Beheer",
+            "Facturen",
             "Analytics",
             "Export/Rapporten",
             "Instellingen"
@@ -216,6 +218,7 @@ def main():
                 "speedometer2",
                 "cloud-upload",
                 "file-earmark-text",
+                "receipt",
                 "graph-up",
                 "file-earmark-arrow-down",
                 "gear"
@@ -250,6 +253,8 @@ def main():
         upload_receipts.show()
     elif selected == "Bonnen Beheer":
         receipt_management.show()
+    elif selected == "Facturen":
+        invoices.show()
     elif selected == "Analytics":
         analytics.show()
     elif selected == "Export/Rapporten":

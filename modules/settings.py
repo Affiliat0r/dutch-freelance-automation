@@ -6,6 +6,8 @@ import logging
 
 from config import Config
 from utils.database_utils import save_category_tax_rules, get_category_tax_rules, ensure_user_settings_exists
+from utils.invoice_storage import load_settings, save_settings
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +18,10 @@ def show():
     st.markdown("Beheer uw account en applicatie instellingen")
 
     # Settings tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "👤 Profiel",
         "🏢 Bedrijf",
+        "📝 Factuur Instellingen",
         "💶 BTW & Belasting",
         "🔧 Systeem",
         "🔐 Beveiliging"
@@ -31,12 +34,15 @@ def show():
         show_company_settings()
 
     with tab3:
-        show_tax_settings()
+        show_invoice_settings()
 
     with tab4:
-        show_system_settings()
+        show_tax_settings()
 
     with tab5:
+        show_system_settings()
+
+    with tab6:
         show_security_settings()
 
 def show_profile_settings():
@@ -129,6 +135,254 @@ def show_company_settings():
 
     if st.button("💾 Bedrijfsinstellingen Opslaan", type="primary"):
         st.success("✅ Bedrijfsinstellingen opgeslagen!")
+
+def show_invoice_settings():
+    """Show invoice-specific settings."""
+
+    st.subheader("📝 Factuur Instellingen")
+
+    # Load existing settings
+    settings = load_settings()
+
+    st.markdown("### Bedrijfsinformatie voor Facturen")
+    st.info("Deze informatie wordt gebruikt op facturen. Zorg ervoor dat alle gegevens correct zijn.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        company_name = st.text_input(
+            "Bedrijfsnaam *",
+            value=settings.get('company_name', ''),
+            key="invoice_company_name",
+            help="Volledige bedrijfsnaam zoals geregistreerd bij KVK"
+        )
+
+        kvk_number = st.text_input(
+            "KVK Nummer *",
+            value=settings.get('kvk_number', ''),
+            key="invoice_kvk_number",
+            help="8-cijferig KVK nummer"
+        )
+
+        btw_number = st.text_input(
+            "BTW Nummer *",
+            value=settings.get('btw_number', ''),
+            key="invoice_btw_number",
+            help="Formaat: NL123456789B01"
+        )
+
+        phone = st.text_input(
+            "Telefoonnummer",
+            value=settings.get('phone', ''),
+            key="invoice_phone"
+        )
+
+    with col2:
+        email = st.text_input(
+            "Email *",
+            value=settings.get('email', ''),
+            key="invoice_email",
+            help="Email adres voor factuur correspondentie"
+        )
+
+        website = st.text_input(
+            "Website",
+            value=settings.get('website', ''),
+            key="invoice_website"
+        )
+
+        iban = st.text_input(
+            "IBAN *",
+            value=settings.get('iban', ''),
+            key="invoice_iban",
+            help="Bankrekening voor betalingen"
+        )
+
+        bic = st.text_input(
+            "BIC/SWIFT Code",
+            value=settings.get('bic', ''),
+            key="invoice_bic"
+        )
+
+    st.markdown("### Adresgegevens")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        street = st.text_input(
+            "Straat + Huisnummer *",
+            value=settings.get('street', ''),
+            key="invoice_street"
+        )
+
+        postal_code = st.text_input(
+            "Postcode *",
+            value=settings.get('postal_code', ''),
+            key="invoice_postal_code"
+        )
+
+    with col2:
+        city = st.text_input(
+            "Plaats *",
+            value=settings.get('city', ''),
+            key="invoice_city"
+        )
+
+        country = st.text_input(
+            "Land *",
+            value=settings.get('country', 'Nederland'),
+            key="invoice_country"
+        )
+
+    st.markdown("---")
+
+    st.markdown("### Factuurnummering")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        invoice_prefix = st.text_input(
+            "Factuur Prefix",
+            value=settings.get('invoice_number_prefix', 'INV'),
+            key="invoice_prefix",
+            help="Prefix voor factuurnummers (bijv. INV, FACT)"
+        )
+
+    with col2:
+        next_number = st.number_input(
+            "Volgend Factuurnummer",
+            min_value=1,
+            value=settings.get('next_invoice_number', 1),
+            key="next_invoice_number",
+            help="Het volgende factuurnummer dat gebruikt wordt"
+        )
+
+    st.info(f"Volgende factuur wordt: **{invoice_prefix}-2025-{next_number:04d}**")
+
+    st.markdown("---")
+
+    st.markdown("### Standaard Betalingsvoorwaarden")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        payment_terms = st.number_input(
+            "Standaard Betaaltermijn (dagen)",
+            min_value=1,
+            max_value=90,
+            value=settings.get('default_payment_terms', 30),
+            key="payment_terms"
+        )
+
+    with col2:
+        payment_method = st.selectbox(
+            "Standaard Betaalmethode",
+            Config.PAYMENT_METHODS,
+            index=0,
+            key="default_payment_method"
+        )
+
+    st.markdown("### Factuur Footer")
+
+    footer_text = st.text_area(
+        "Footer tekst (optioneel)",
+        value=settings.get('footer_text', ''),
+        height=100,
+        key="invoice_footer",
+        help="Extra tekst die onderaan facturen verschijnt"
+    )
+
+    st.markdown("---")
+
+    st.markdown("### Bedrijfslogo")
+
+    uploaded_logo = st.file_uploader(
+        "Upload bedrijfslogo voor facturen",
+        type=['png', 'jpg', 'jpeg'],
+        key="invoice_logo_upload",
+        help="Aanbevolen formaat: 300x100 pixels, PNG met transparante achtergrond"
+    )
+
+    if uploaded_logo:
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.image(uploaded_logo, caption="Logo preview", width=300)
+
+        # Save logo
+        logo_dir = Path(Config.INVOICE_LOGO_DIR)
+        logo_dir.mkdir(parents=True, exist_ok=True)
+        logo_path = logo_dir / f"company_logo.{uploaded_logo.name.split('.')[-1]}"
+
+        with open(logo_path, 'wb') as f:
+            f.write(uploaded_logo.getbuffer())
+
+        st.success(f"Logo opgeslagen: {logo_path.name}")
+
+    # Show current logo if exists
+    elif settings.get('logo_path'):
+        logo_file = Path(settings['logo_path'])
+        if logo_file.exists():
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.image(str(logo_file), caption="Huidig logo", width=300)
+
+    st.markdown("---")
+
+    if st.button("💾 Factuur Instellingen Opslaan", type="primary", use_container_width=True):
+        # Build settings dict
+        new_settings = {
+            'company_name': company_name,
+            'kvk_number': kvk_number,
+            'btw_number': btw_number,
+            'email': email,
+            'phone': phone,
+            'website': website,
+            'iban': iban,
+            'bic': bic,
+            'street': street,
+            'postal_code': postal_code,
+            'city': city,
+            'country': country,
+            'invoice_number_prefix': invoice_prefix,
+            'next_invoice_number': next_number,
+            'default_payment_terms': payment_terms,
+            'default_payment_method': payment_method,
+            'footer_text': footer_text
+        }
+
+        # Preserve logo path if exists
+        if 'logo_path' in settings:
+            new_settings['logo_path'] = settings['logo_path']
+
+        # Update logo path if new logo was uploaded
+        if uploaded_logo:
+            new_settings['logo_path'] = str(logo_path)
+
+        # Validate required fields
+        required_fields = {
+            'Bedrijfsnaam': company_name,
+            'KVK Nummer': kvk_number,
+            'BTW Nummer': btw_number,
+            'Email': email,
+            'IBAN': iban,
+            'Straat': street,
+            'Postcode': postal_code,
+            'Plaats': city,
+            'Land': country
+        }
+
+        missing = [field for field, value in required_fields.items() if not value]
+
+        if missing:
+            st.error(f"❌ Vul alle verplichte velden in: {', '.join(missing)}")
+        else:
+            try:
+                save_settings(new_settings)
+                st.success("✅ Factuur instellingen opgeslagen!")
+                st.balloons()
+            except Exception as e:
+                logger.error(f"Error saving invoice settings: {e}")
+                st.error(f"❌ Fout bij opslaan: {e}")
 
 def show_tax_settings():
     """Show tax and VAT settings."""

@@ -1,0 +1,18 @@
+{
+  "company_name": "",
+  "company_address": "",
+  "company_city": "",
+  "company_postal_code": "",
+  "company_country": "Nederland",
+  "company_kvk": "",
+  "company_btw": "",
+  "company_iban": "",
+  "company_email": "",
+  "company_phone": "",
+  "company_website": "",
+  "invoice_prefix": "INV",
+  "invoice_counter": 1,
+  "default_payment_terms": 30,
+  "default_currency": "EUR",
+  "logo_path": null
+}

@@ -199,6 +199,7 @@ receipt_data/receipts_metadata.json
 # User invoice data (keep structure, ignore actual invoices)
 invoice_data/invoices/*.pdf
 invoice_data/logos/*
+!invoice_data/logos/.gitkeep
 invoice_data/invoices_metadata.json
 invoice_data/invoice_settings.json
 invoice_data/clients.json

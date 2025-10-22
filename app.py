@@ -267,6 +267,12 @@ if __name__ == "__main__":
         # Validate configuration on startup
         # Config.validate()  # Disabled for initial development
 
+        # Initialize local storage (creates directories and template files)
+        from utils.local_storage import init_storage
+        from utils.invoice_storage import init_invoice_storage
+        init_storage()
+        init_invoice_storage()
+
         # Initialize database
         from database.connection import init_db
         init_db()

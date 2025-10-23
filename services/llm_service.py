@@ -12,6 +12,9 @@ from google.api_core import exceptions as google_exceptions
 
 from config import Config
 from utils.database_utils import get_category_tax_rules, ensure_user_settings_exists
+from services.exchange_rate_service import get_exchange_rate_service
+from datetime import datetime, date
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,10 @@ class LLMService:
             logger.info("Step 2: Converting raw text to structured data with Gemini")
             structured_data = self._text_to_structured_data(raw_text)
 
+            # STEP 2.5: Handle Currency Conversion (if needed)
+            logger.info("Step 2.5: Checking for foreign currency and converting to EUR")
+            structured_data = self._handle_currency_conversion(structured_data)
+
             # STEP 3: Extract Category
             logger.info("Step 3: Extracting category from structured data with Gemini")
             category = self._extract_category(structured_data)
@@ -189,7 +196,7 @@ Receipt text:
 Extract and return the following information in JSON format:
 {{
     "vendor_name": "Store/company name",
-    "vendor_address": "Full address",
+    "vendor_address": "Full address (include country if visible)",
     "date": "Transaction date in YYYY-MM-DD format",
     "invoice_number": "Receipt/invoice number",
     "items": [
@@ -211,15 +218,21 @@ Extract and return the following information in JSON format:
     "total_amount": 0.00,
     "payment_method": "cash/card/pin/unknown",
     "confidence": 0.95,
-    "detected_language": "nl or en",
+    "detected_language": "ISO 639-1 code (e.g., nl, en, tr, de, fr)",
+    "detected_country": "Country where receipt was issued (e.g., Netherlands, Turkey, Germany)",
+    "currency_symbol": "Currency symbol found on receipt (€, $, ₺, £, etc.)",
     "notes": "Any relevant information"
 }}
 
 IMPORTANT RULES:
-- All amounts in EUR (€)
+- Extract EXACT amounts as they appear on the receipt (in original currency)
+- Detect the language from the receipt text (nl=Dutch, en=English, tr=Turkish, de=German, fr=French, etc.)
+- Detect the country from the address or text
+- Note the currency symbol used (€, $, ₺, £, etc.)
 - For Dutch receipts: "BTW" = VAT, "Totaal" = Total
-- VAT rates in Netherlands: 21% (hoog), 9% (laag), 6% (old rate), 0% (geen)
-- Extract EXACT amounts from the receipt
+- For Turkish receipts: "KDV" = VAT, "Toplam" = Total
+- For German receipts: "MwSt" = VAT, "Summe/Gesamt" = Total
+- VAT rates vary by country - extract the rate shown on the receipt
 - Date format must be YYYY-MM-DD
 - If unsure about a value, set confidence lower
 
@@ -227,6 +240,148 @@ Return ONLY valid JSON, no additional text.
 """
         response = self._call_with_retry(self.model.generate_content, prompt)
         return self._parse_json_response(response.text)
+
+    def _handle_currency_conversion(self, structured_data: Dict) -> Dict:
+        """
+        STEP 2.5: Handle currency conversion for foreign receipts.
+
+        Detects language → infers currency → converts to EUR if needed.
+
+        Args:
+            structured_data: Structured data from Step 2
+
+        Returns:
+            Updated structured data with currency fields and EUR amounts
+        """
+        # Get detected language
+        detected_language = structured_data.get('detected_language', 'nl').lower()
+
+        # Infer currency from language using mapping
+        inferred_currency = Config.LANGUAGE_CURRENCY_MAP.get(detected_language, 'EUR')
+
+        # Override with detected country if available for more accuracy
+        detected_country = structured_data.get('detected_country', '').lower()
+        if 'turkey' in detected_country or 'türkiye' in detected_country:
+            inferred_currency = 'TRY'
+        elif 'united states' in detected_country or 'usa' in detected_country:
+            inferred_currency = 'USD'
+        elif 'united kingdom' in detected_country or 'uk' in detected_country:
+            inferred_currency = 'GBP'
+
+        # Store original currency
+        structured_data['original_currency'] = inferred_currency
+
+        logger.info(f"Detected language: {detected_language}, Inferred currency: {inferred_currency}")
+
+        # If already in EUR, no conversion needed
+        if inferred_currency == 'EUR':
+            structured_data['exchange_rate'] = None
+            structured_data['exchange_rate_date'] = None
+            structured_data['exchange_rate_source'] = None
+            structured_data['original_total_amount'] = structured_data.get('total_amount', 0)
+            structured_data['original_vat_amount'] = structured_data.get('total_vat', 0)
+            logger.info("Receipt already in EUR, no conversion needed")
+            return structured_data
+
+        # Foreign currency detected - need to convert
+        logger.info(f"Foreign currency detected: {inferred_currency}. Converting to EUR...")
+
+        try:
+            # Get receipt date
+            receipt_date_str = structured_data.get('date')
+            if receipt_date_str:
+                try:
+                    receipt_date = datetime.strptime(receipt_date_str, '%Y-%m-%d').date()
+                except:
+                    receipt_date = date.today()
+                    logger.warning(f"Could not parse date '{receipt_date_str}', using today")
+            else:
+                receipt_date = date.today()
+                logger.warning("No date in structured data, using today")
+
+            # Store original amounts
+            original_total = structured_data.get('total_amount', 0)
+            original_vat = structured_data.get('total_vat', 0)
+            structured_data['original_total_amount'] = original_total
+            structured_data['original_vat_amount'] = original_vat
+
+            # Get exchange rate service
+            exchange_service = get_exchange_rate_service()
+
+            # Fetch exchange rate
+            rate_data = exchange_service.get_exchange_rate(
+                from_currency=inferred_currency,
+                to_currency='EUR',
+                rate_date=receipt_date
+            )
+
+            if not rate_data['success']:
+                logger.error(f"Failed to get exchange rate: {rate_data.get('error')}")
+                # Use fallback rate if available
+                fallback_rate = Config.FALLBACK_EXCHANGE_RATES.get(inferred_currency)
+                if fallback_rate:
+                    logger.warning(f"Using fallback exchange rate: {inferred_currency} → EUR = {fallback_rate}")
+                    rate_data = {
+                        'success': True,
+                        'rate': Decimal(str(fallback_rate)),
+                        'date': receipt_date,
+                        'source': 'fallback_config'
+                    }
+                else:
+                    raise Exception(f"No exchange rate available for {inferred_currency}")
+
+            # Store exchange rate info
+            exchange_rate = rate_data['rate']
+            structured_data['exchange_rate'] = float(exchange_rate)
+            structured_data['exchange_rate_date'] = str(rate_data['date'])
+            structured_data['exchange_rate_source'] = rate_data['source']
+
+            logger.info(f"Exchange rate: 1 {inferred_currency} = {exchange_rate} EUR (from {rate_data['source']})")
+
+            # Convert all monetary amounts to EUR
+            if original_total:
+                eur_total = float(Decimal(str(original_total)) * exchange_rate)
+                structured_data['total_amount'] = round(eur_total, 2)
+                logger.info(f"Converted total: {original_total} {inferred_currency} → {eur_total:.2f} EUR")
+
+            if original_vat:
+                eur_vat = float(Decimal(str(original_vat)) * exchange_rate)
+                structured_data['total_vat'] = round(eur_vat, 2)
+
+            # Convert subtotal
+            if 'subtotal' in structured_data:
+                original_subtotal = structured_data['subtotal']
+                eur_subtotal = float(Decimal(str(original_subtotal)) * exchange_rate)
+                structured_data['subtotal'] = round(eur_subtotal, 2)
+
+            # Convert VAT breakdown
+            if 'vat_breakdown' in structured_data:
+                for vat_rate, vat_amount in structured_data['vat_breakdown'].items():
+                    if vat_amount:
+                        eur_vat_amount = float(Decimal(str(vat_amount)) * exchange_rate)
+                        structured_data['vat_breakdown'][vat_rate] = round(eur_vat_amount, 2)
+
+            # Convert individual items
+            if 'items' in structured_data:
+                for item in structured_data['items']:
+                    if 'unit_price' in item:
+                        original_price = item['unit_price']
+                        eur_price = float(Decimal(str(original_price)) * exchange_rate)
+                        item['unit_price'] = round(eur_price, 2)
+                    if 'total_price' in item:
+                        original_total_price = item['total_price']
+                        eur_total_price = float(Decimal(str(original_total_price)) * exchange_rate)
+                        item['total_price'] = round(eur_total_price, 2)
+
+            logger.info(f"Successfully converted all amounts from {inferred_currency} to EUR")
+
+        except Exception as e:
+            logger.error(f"Currency conversion failed: {e}")
+            # Continue with original amounts, but mark as needing manual review
+            structured_data['currency_conversion_error'] = str(e)
+            structured_data['manual_review_required'] = True
+
+        return structured_data
 
     def _extract_category(self, structured_data: Dict) -> str:
         """

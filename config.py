@@ -100,6 +100,91 @@ class Config:
     INVOICE_LOGO_MAX_WIDTH = 200  # pixels
     INVOICE_LOGO_MAX_HEIGHT = 100  # pixels
 
+    # Currency settings - Language to Currency mapping
+    # Used for automatic currency detection based on receipt language
+    LANGUAGE_CURRENCY_MAP = {
+        # Eurozone countries
+        'nl': 'EUR',  # Dutch → Euro
+        'de': 'EUR',  # German → Euro
+        'fr': 'EUR',  # French → Euro
+        'it': 'EUR',  # Italian → Euro
+        'es': 'EUR',  # Spanish → Euro
+        'pt': 'EUR',  # Portuguese → Euro
+        'el': 'EUR',  # Greek → Euro
+        'fi': 'EUR',  # Finnish → Euro
+        'et': 'EUR',  # Estonian → Euro
+        'lv': 'EUR',  # Latvian → Euro
+        'lt': 'EUR',  # Lithuanian → Euro
+        'sk': 'EUR',  # Slovak → Euro
+        'sl': 'EUR',  # Slovenian → Euro
+        'mt': 'EUR',  # Maltese → Euro
+        'cy': 'EUR',  # Cypriot → Euro
+
+        # Other European currencies
+        'en-GB': 'GBP',  # British English → Pound Sterling
+        'pl': 'PLN',  # Polish → Zloty
+        'cs': 'CZK',  # Czech → Koruna
+        'sv': 'SEK',  # Swedish → Krona
+        'no': 'NOK',  # Norwegian → Krone
+        'da': 'DKK',  # Danish → Krone
+        'hu': 'HUF',  # Hungarian → Forint
+        'ro': 'RON',  # Romanian → Leu
+        'bg': 'BGN',  # Bulgarian → Lev
+        'hr': 'HRK',  # Croatian → Kuna (transitioning to EUR)
+        'is': 'ISK',  # Icelandic → Krona
+
+        # Major international currencies
+        'en-US': 'USD',  # American English → US Dollar
+        'en': 'USD',     # Default English → US Dollar (can be overridden by address detection)
+        'tr': 'TRY',  # Turkish → Turkish Lira
+        'ru': 'RUB',  # Russian → Ruble
+        'uk': 'UAH',  # Ukrainian → Hryvnia
+        'ja': 'JPY',  # Japanese → Yen
+        'zh': 'CNY',  # Chinese → Yuan
+        'ko': 'KRW',  # Korean → Won
+        'ar': 'AED',  # Arabic → Dirham (UAE default)
+        'th': 'THB',  # Thai → Baht
+        'vi': 'VND',  # Vietnamese → Dong
+        'id': 'IDR',  # Indonesian → Rupiah
+        'ms': 'MYR',  # Malay → Ringgit
+        'hi': 'INR',  # Hindi → Rupee
+        'bn': 'BDT',  # Bengali → Taka
+        'he': 'ILS',  # Hebrew → Shekel
+
+        # Americas
+        'pt-BR': 'BRL',  # Brazilian Portuguese → Real
+        'es-MX': 'MXN',  # Mexican Spanish → Peso
+        'es-AR': 'ARS',  # Argentinian Spanish → Peso
+        'es-CL': 'CLP',  # Chilean Spanish → Peso
+        'es-CO': 'COP',  # Colombian Spanish → Peso
+
+        # Oceania
+        'en-AU': 'AUD',  # Australian English → Australian Dollar
+        'en-NZ': 'NZD',  # New Zealand English → NZ Dollar
+
+        # Africa
+        'en-ZA': 'ZAR',  # South African English → Rand
+        'en-NG': 'NGN',  # Nigerian English → Naira
+        'en-KE': 'KES',  # Kenyan English → Shilling
+    }
+
+    # Fallback/manual exchange rates (used when API is unavailable)
+    # These should be updated periodically
+    FALLBACK_EXCHANGE_RATES = {
+        'USD': 0.92,  # 1 USD = 0.92 EUR (approximate)
+        'GBP': 1.17,  # 1 GBP = 1.17 EUR
+        'TRY': 0.028,  # 1 TRY = 0.028 EUR
+        'PLN': 0.23,  # 1 PLN = 0.23 EUR
+        'CZK': 0.040,  # 1 CZK = 0.040 EUR
+        'SEK': 0.088,  # 1 SEK = 0.088 EUR
+        'NOK': 0.086,  # 1 NOK = 0.086 EUR
+        'DKK': 0.134,  # 1 DKK = 0.134 EUR
+        'CHF': 1.06,  # 1 CHF = 1.06 EUR
+        'JPY': 0.0063,  # 1 JPY = 0.0063 EUR
+        'CNY': 0.13,  # 1 CNY = 0.13 EUR
+        'INR': 0.011,  # 1 INR = 0.011 EUR
+    }
+
     @classmethod
     def create_directories(cls):
         """Create necessary directories if they don't exist."""

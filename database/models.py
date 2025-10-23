@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from sqlalchemy import (
-    Column, Integer, String, DateTime, ForeignKey,
+    Column, Integer, String, DateTime, Date, ForeignKey,
     Text, Numeric, Boolean, JSON, Float
 )
 from sqlalchemy.ext.declarative import declarative_base
@@ -122,6 +122,14 @@ class ExtractedData(Base):
     vat_9_amount = Column(Numeric(12, 2), default=0)
     vat_21_amount = Column(Numeric(12, 2), default=0)
     total_incl_vat = Column(Numeric(12, 2))
+
+    # Currency conversion (for foreign receipts)
+    original_currency = Column(String(3), default='EUR')  # ISO 4217 code: EUR, USD, TRY, etc.
+    original_total_amount = Column(Numeric(12, 2))  # Amount in original currency
+    original_vat_amount = Column(Numeric(12, 2))  # VAT in original currency
+    exchange_rate = Column(Numeric(10, 6))  # Exchange rate to EUR (e.g., 0.028 for TRY→EUR)
+    exchange_rate_date = Column(Date)  # Date when exchange rate was fetched
+    exchange_rate_source = Column(String(50))  # API source: 'frankfurter', 'manual', etc.
 
     # Tax calculations
     vat_deductible_percentage = Column(Float)

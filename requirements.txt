@@ -34,6 +34,9 @@ python-dotenv==1.0.1
 # Date and time
 python-dateutil==2.9.0
 
+# HTTP requests
+requests==2.32.3
+
 # Validation
 pydantic==2.8.2
 email-validator==2.2.0

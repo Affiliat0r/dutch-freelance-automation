@@ -24,6 +24,7 @@ from modules import (
 )
 from utils.auth import check_authentication, login_page
 from utils.session_state import init_session_state
+from utils.reset_utils import hard_reset_all_data, get_data_statistics
 
 # Configure logging
 logging.basicConfig(
@@ -240,6 +241,51 @@ def main():
 
         # Update current page based on menu selection
         st.session_state['current_page'] = selected
+
+        # Hard Reset Section
+        st.markdown("---")
+        st.markdown("### ⚠️ Data Beheer")
+
+        # Show current data statistics
+        with st.expander("📊 Huidige data overzicht"):
+            stats = get_data_statistics()
+            st.write(f"**Bonnen:** {stats['receipt_count']} ({stats['receipt_files']} bestanden)")
+            st.write(f"**Facturen:** {stats['invoice_count']} ({stats['invoice_files']} bestanden)")
+
+        # Hard reset button with confirmation
+        if st.button("🗑️ Hard Reset", type="secondary", use_container_width=True):
+            st.session_state['show_reset_confirmation'] = True
+
+        # Show confirmation dialog
+        if st.session_state.get('show_reset_confirmation', False):
+            st.warning("**LET OP:** Dit verwijdert ALLE data permanent!")
+            st.write("Dit omvat:")
+            st.write("- Alle bonnen en bestanden")
+            st.write("- Alle facturen en klanten")
+            st.write("- Database gegevens")
+            st.write("- Exchange rate cache")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Ja, reset", type="primary", use_container_width=True):
+                    with st.spinner("Data wordt verwijderd..."):
+                        results = hard_reset_all_data()
+
+                    if results['success']:
+                        st.success("✅ Hard reset succesvol!")
+                        st.balloons()
+                        # Clear confirmation flag
+                        st.session_state['show_reset_confirmation'] = False
+                        # Force page reload
+                        st.rerun()
+                    else:
+                        st.error("❌ Reset mislukt. Zie logs voor details.")
+                        st.json(results)
+
+            with col2:
+                if st.button("❌ Annuleer", use_container_width=True):
+                    st.session_state['show_reset_confirmation'] = False
+                    st.rerun()
 
         # Footer info
         st.markdown("---")

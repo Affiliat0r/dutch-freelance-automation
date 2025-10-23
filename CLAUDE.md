@@ -91,7 +91,7 @@ The application now includes a complete invoice system for tracking revenue alon
 - Export/Reports includes P&L and revenue reports
 - Settings has dedicated Invoice Settings tab
 
-### Four-Step Gemini Processing Pipeline
+### Multi-Step Gemini Processing Pipeline
 
 The application uses a **Gemini-only processing pipeline** ([services/processing_pipeline.py](services/processing_pipeline.py)):
 
@@ -104,6 +104,13 @@ The application uses a **Gemini-only processing pipeline** ([services/processing
 - Gemini parses raw text into JSON structure
 - Extracts: vendor, date, items, amounts, VAT breakdown, payment method
 - Dutch receipt format aware (BTW, Totaal, etc.)
+
+**Step 2.5: Currency Conversion** ([services/llm_service.py:244-383](services/llm_service.py#L244-L383))
+- Detects foreign language receipts (Turkish, English, etc.)
+- Infers currency from language (TRY for Turkish, USD/GBP for English)
+- Converts all amounts to EUR using Frankfurter API
+- Adds conversion metadata (rate, date, original currency)
+- See "Currency Conversion System" section below for details
 
 **Step 3: Structured Data → Category** ([services/llm_service.py:182-234](services/llm_service.py#L182-L234))
 - Gemini categorizes expense using Dutch tax categories
@@ -133,17 +140,19 @@ config.py                       # Centralized configuration management
 │   ├── export_reports.py       # Excel/CSV/JSON export (includes P&L & revenue reports)
 │   └── settings.py             # User preferences (includes invoice settings tab)
 ├── services/
-│   ├── llm_service.py          # 4-step Gemini processing pipeline
+│   ├── llm_service.py          # Multi-step Gemini processing pipeline (with currency conversion)
 │   ├── processing_pipeline.py  # Orchestrates receipt processing flow
-│   ├── invoice_service.py      # Invoice calculations and validation (NEW)
-│   ├── pdf_generator.py        # Invoice PDF generation with ReportLab (NEW)
+│   ├── invoice_service.py      # Invoice calculations and validation
+│   ├── pdf_generator.py        # Invoice PDF generation with ReportLab
+│   ├── exchange_rate_service.py # Currency conversion via Frankfurter API (NEW)
 │   ├── export_service.py       # Export functionality
 │   └── ocr_service.py          # Legacy Tesseract OCR (not actively used)
 └── utils/
     ├── session_state.py        # Streamlit session management
     ├── database_utils.py       # Database CRUD operations
     ├── local_storage.py        # Receipt local JSON storage
-    ├── invoice_storage.py      # Invoice local JSON storage (NEW)
+    ├── invoice_storage.py      # Invoice local JSON storage
+    ├── reset_utils.py          # Hard reset utility for development (NEW)
     ├── file_utils.py           # File handling, validation
     ├── calculations.py         # Tax calculation helpers
     └── auth.py                 # Authentication (currently disabled)
@@ -204,6 +213,64 @@ The application uses specific Dutch expense categories defined in [config.py:58-
 - `vat_deductible = total_vat × (btw_percentage / 100)`
 - `remainder_after_vat = total_amount - vat_deductible`
 - `profit_deduction = amount_excl_vat × (ib_percentage / 100)`
+
+## Currency Conversion System
+
+The application automatically detects and converts foreign currency receipts to EUR ([services/exchange_rate_service.py](services/exchange_rate_service.py)):
+
+### How It Works
+
+**Language Detection → Currency Inference** ([services/llm_service.py:244-383](services/llm_service.py#L244-L383)):
+- Detects receipt language from `structured_data['language']` field
+- Maps languages to currencies:
+  - Turkish (`tr`) → TRY (Turkish Lira)
+  - English (`en`) → USD (US Dollar) or GBP (British Pound)
+  - Dutch (`nl`) → EUR (no conversion needed)
+- Uses receipt date for historical exchange rates
+
+### Exchange Rate Service ([services/exchange_rate_service.py](services/exchange_rate_service.py))
+
+**API Source:** [Frankfurter API](https://www.frankfurter.app/docs/)
+- Free, open-source API for European Central Bank exchange rates
+- No API key required
+- Supports historical rates and all major currencies
+
+**Key Features:**
+- `get_exchange_rate(from_currency, to_currency, rate_date)` - Fetch exchange rate
+- `convert_amount(amount, from_currency, to_currency, rate_date)` - Convert amount
+- **90-day caching** - Exchange rates cached in `temp/exchange_rates_cache.json`
+- **Fallback mechanism** - Uses recent cached rate if API unavailable
+
+**Converted Data Structure:**
+```python
+{
+    'original_currency': 'TRY',
+    'original_amounts': {
+        'total_amount': 500.00,
+        'total_vat': 90.00,
+        'amount_excl_vat': 410.00
+    },
+    'exchange_rate': 0.028,
+    'exchange_rate_date': '2025-01-15',
+    'total_amount': 14.00,      # Converted to EUR
+    'total_vat': 2.52,          # Converted to EUR
+    'amount_excl_vat': 11.48,   # Converted to EUR
+    'currency': 'EUR'
+}
+```
+
+**Error Handling:**
+- If conversion fails, receipt marked for `manual_review_required`
+- Original amounts preserved in `original_amounts` field
+- Error message stored in `currency_conversion_error` field
+
+### Testing Currency Conversion
+
+To test with foreign receipts:
+1. Upload a Turkish receipt → Should auto-convert TRY to EUR
+2. Upload an English receipt → Should auto-convert USD/GBP to EUR
+3. Check `exchange_rates_cache.json` for cached rates
+4. Review converted amounts in Receipt Management module
 
 ## Excel Export Format
 
@@ -282,7 +349,7 @@ st.session_state['selected_page'] = 'Bonnen Beheer'
 st.rerun()
 ```
 
-Available page names: "Dashboard", "Upload Bonnen", "Bonnen Beheer", "Analytics", "Export/Rapporten", "Instellingen"
+Available page names: "Dashboard", "Upload Bonnen", "Bonnen Beheer", "Facturen", "Analytics", "Export/Rapporten", "Instellingen"
 
 ## Important Notes
 
@@ -303,6 +370,10 @@ Available page names: "Dashboard", "Upload Bonnen", "Bonnen Beheer", "Analytics"
 5. **Gemini API Dependency**: The application **requires** Gemini API. There is no fallback. Ensure `GEMINI_API_KEY` is always configured.
 
 6. **Database Defaults to SQLite**: If `DATABASE_URL` contains "sqlite", the app uses SQLite with special connection settings ([database/connection.py:15-22](database/connection.py#L15-L22)). Otherwise, it uses PostgreSQL with connection pooling.
+
+7. **Invoice System Status**: The invoice system (Facturen module) is fully implemented with all core features (invoice creation, PDF generation, client management, unpaid tracking). Remaining work focuses on integration with dashboard, analytics, and export modules. See [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) for details.
+
+8. **Currency Conversion**: Foreign currency receipts are automatically detected and converted to EUR using the Frankfurter API. No additional API key needed. Exchange rates are cached for 90 days. If you're working with receipts from Turkey, UK, or US, currency conversion happens automatically in Step 2.5 of the processing pipeline.
 
 ## Common Development Tasks
 
@@ -348,6 +419,34 @@ When changing prompts, test with diverse receipt types (Dutch/English, digital/s
 
 **Current state:** Most modules use local storage. Database is set up for future multi-user support.
 
+### Resetting Application Data (Development)
+
+For development and testing, use [utils/reset_utils.py](utils/reset_utils.py) to completely reset all data:
+
+```python
+from utils.reset_utils import hard_reset_all_data, get_data_statistics
+
+# Get current data statistics before reset
+stats = get_data_statistics()
+print(f"Current data: {stats['receipt_count']} receipts, {stats['invoice_count']} invoices")
+
+# Perform hard reset (WARNING: Deletes ALL data!)
+results = hard_reset_all_data()
+
+if results['success']:
+    print("All data successfully reset")
+else:
+    print(f"Reset completed with errors: {results}")
+```
+
+**What gets deleted:**
+- All receipt files and `receipts_metadata.json`
+- All invoice files, `invoices_metadata.json`, and client data
+- Exchange rate cache (`temp/exchange_rates_cache.json`)
+- Database (dropped and recreated)
+
+**WARNING:** This is irreversible! Only use during development/testing. Never use in production.
+
 ## Troubleshooting
 
 **Gemini API Errors:**
@@ -377,3 +476,12 @@ When changing prompts, test with diverse receipt types (Dutch/English, digital/s
 - For PDFs: Ensure they contain text (not scanned images embedded in PDF)
 - Check processing logs in Streamlit console
 - Review extracted data confidence score (< 0.7 requires manual review)
+
+**Currency Conversion Issues:**
+- Frankfurter API requires no authentication, but needs internet connection
+- Check network connectivity if conversions fail
+- Exchange rates are cached for 90 days in `temp/exchange_rates_cache.json`
+- If API is down, system uses fallback from cache (last 30 days)
+- Manual review required if conversion fails (check `currency_conversion_error` field)
+- To clear cache: Delete `temp/exchange_rates_cache.json` file
+- Verify receipt language detection is working correctly (language field should be `tr`, `en`, `nl`, etc.)
